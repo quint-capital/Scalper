@@ -15,7 +15,7 @@
 1. Upload the files in this folder to your GitHub repo.
 2. In Railway, mount the existing persistent volume at `/app/data`.
 3. Set `DERIV_SYMBOL=R_75` if needed.
-4. Default WebSocket URL uses `wss://ws.derivws.com/websockets/v3?app_id=1089`. `1089` is a public/test app ID; replace it with your registered app ID for production if you have one. You may override the URL with `DERIV_WS_URL`.
+4. Set the Railway variable `DERIV_APP_ID` to your own registered Deriv application ID (create/register one through Deriv API settings). The default `1089` ID is for testing only. The monitor builds the official endpoint `wss://ws.derivws.com/websockets/v3?app_id=YOUR_ID`. You can override the full endpoint with `DERIV_WS_URL` if needed.
 5. Default bootstrap is 10,000 M1 candles. Override with `HISTORY_BOOTSTRAP_CANDLES`.
 6. Deploy and inspect logs for a successful WebSocket connection, historical candles and `[HEARTBEAT] Live ticks flowing`.
 
@@ -25,3 +25,11 @@
 - Simulated OHLC outcomes can be ambiguous when stop and target are touched in the same M1 candle. Ambiguous cases are not counted as wins/losses.
 - No strategy is presumed profitable. Monitor enough completed setups and review results before considering changes.
 - `SCALP_TP1_RR` (default `0.75`) and `SCALP_TP1_MAX_RR` (default `1.00`) tune the first target.
+
+
+## If Railway logs show HTTP 520 on the WebSocket handshake
+
+- Confirm `DERIV_APP_ID` is your own registered Deriv app ID, then redeploy.
+- Keep the default official endpoint first; do not assume switching to another legacy hostname will fix an HTTP 520.
+- If a registered ID still returns HTTP 520, test the same endpoint from a different network/runtime and check Deriv service status. HTTP 520 is returned during the handshake, before this monitor sends a market-data request, so it is not caused by the scalping signal rules.
+- Confirm the Railway Volume is attached to this exact service with mount path `/app/data`. A correctly attached volume should provide `RAILWAY_VOLUME_MOUNT_PATH` at runtime. The marker file by itself does not prove persistence.

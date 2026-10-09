@@ -7,9 +7,11 @@ ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "60"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
+# Preserve the WebSocket endpoints from the user's known-working v3.5 package.
+# Only override the primary endpoint explicitly through DERIV_WS_URL if needed.
 WS_URLS = [
-    os.getenv("DERIV_WS_URL", "wss://ws.derivws.com/websockets/v3?app_id=1089").strip(),
-    "wss://ws.binaryws.com/websockets/v3?app_id=1089",
+    os.getenv("DERIV_WS_URL", "wss://api.derivws.com/trading/v1/options/ws/public").strip(),
+    "wss://ws.binaryws.com/websockets/v3",
 ]
 
 # Deep bootstrap: enough M1 data to create meaningful H4/H1/M30/M15/M5 context.
