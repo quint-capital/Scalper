@@ -330,40 +330,122 @@ def mark_success(summary):
     temp.replace(MARKER)
 
 async def live_heartbeat():
-    """Market-data-only heartbeat, not a live strategy signal or trading interface."""
+    """Live M1 scalping signal monitor with simulated outcomes; never executes trades."""
     delay=5
+    candles=[]
+    current=None
+    active=[]
+    stats={'setups':0,'wins':0,'losses':0,'timeouts':0,'ambiguous':0}
+    log_dir=DATA_DIR/'scalping'
+    log_dir.mkdir(parents=True,exist_ok=True)
+    setup_file=log_dir/'v75_scalping_setups.jsonl'
+    state_file=log_dir/'v75_scalping_state.json'
+
+    def save_state():
+        payload={**stats,'open_setups':len(active),'last_update_epoch':int(time.time()),'symbol':SYMBOL,
+                 'mode':'ANALYSIS ONLY — NO TRADE EXECUTION','strategy':'M1 entry with completed M5/M15 confirmation',
+                 'open':active}
+        state_file.write_text(json.dumps(payload,indent=2),encoding='utf-8')
+
+    def log_setup(row):
+        with setup_file.open('a',encoding='utf-8') as f:
+            f.write(json.dumps(row,separators=(',',':'))+'\n')
+
+    def close_setup(setup, status, price, epoch):
+        sign=1 if setup['direction']=='BUY' else -1
+        r=max(-1.0,min(1.5,((price-setup['entry'])*sign)/setup['risk_distance']))
+        setup.update({'status':status,'exit':round(price,5),'exit_epoch':epoch,'terminal_R':round(r,4)})
+        if r>0: stats['wins']+=1
+        elif r<0: stats['losses']+=1
+        else: stats['timeouts']+=1
+        if status=='AMBIGUOUS': stats['ambiguous']+=1
+        log_setup(setup)
+        print(f"[SETUP-CLOSED] id={setup['id']} {setup['strategy']} {setup['direction']} status={status} R={r:+.2f} | W/L/T={stats['wins']}/{stats['losses']}/{stats['timeouts']}",flush=True)
+
     while True:
         try:
             async with connect_deriv() as ws:
-                req={'ticks':SYMBOL,'subscribe':1,'req_id':8001};await ws.send(json.dumps(req))
-                print(f'[LIVE-MONITOR] Subscribed to public ticks for {SYMBOL}; monitoring only, no trade execution.',flush=True)
+                req={'ticks':SYMBOL,'subscribe':1,'req_id':8001}
+                await ws.send(json.dumps(req))
+                print(f'[SCALP-MONITOR] Connected; subscribed to {SYMBOL}. Building M1 candles; signals are simulated only.',flush=True)
+                delay=5
                 async for raw in ws:
                     msg=json.loads(raw)
-                    if msg.get('error'): raise RuntimeError(msg['error'].get('message','Deriv websocket error'))
-                    if msg.get('msg_type')=='tick':
-                        t=msg.get('tick',{});print(f"[LIVE-TICK] epoch={t.get('epoch')} symbol={t.get('symbol')} quote={t.get('quote')}",flush=True)
-                        delay=5
+                    if msg.get('error'):
+                        raise RuntimeError(msg['error'].get('message','Deriv websocket error'))
+                    if msg.get('msg_type')!='tick':
+                        continue
+                    tick=msg.get('tick',{})
+                    try:
+                        epoch=int(tick['epoch']); price=float(tick['quote'])
+                    except (KeyError,TypeError,ValueError):
+                        continue
+                    minute=epoch-(epoch%60)
+                    if current is None:
+                        current={'ts':minute,'open':price,'high':price,'low':price,'close':price}
+                    elif minute==current['ts']:
+                        current['high']=max(current['high'],price);current['low']=min(current['low'],price);current['close']=price
+                    elif minute>current['ts']:
+                        # Only completed candles are used for signal decisions.
+                        if minute-current['ts']<=180:
+                            candles.append(current)
+                            if len(candles)>20000: candles=candles[-20000:]
+                            if len(candles)%5==0:
+                                print(f"[SCALP-MONITOR] closed_M1={len(candles)} quote={price} open_setups={len(active)}",flush=True)
+                            if len(candles)>=100:
+                                m5=aggregate(candles,5);m15=aggregate(candles,15)
+                                ts=current['ts']
+                                m5=[c for c in m5 if c['ts']+300<=ts]
+                                m15=[c for c in m15 if c['ts']+900<=ts]
+                                signals=make_signals(candles,m5,m15,len(candles)-1)
+                                if signals and not active:
+                                    # Prioritize pullback, then momentum; reversals are lower priority.
+                                    priority={'TREND_PULLBACK':0,'MOMENTUM_BREAKOUT':1,'COMPRESSION_EXPANSION':2,'FAILED_BREAK_REVERSAL':3,'RANGE_REJECTION':4}
+                                    strat,direction,risk=sorted(signals,key=lambda x:priority.get(x[0],99))[0]
+                                    entry=price
+                                    sign=1 if direction=='BUY' else -1
+                                    sid=f"{SYMBOL}-{epoch}-{stats['setups']+1}"
+                                    setup={'id':sid,'symbol':SYMBOL,'strategy':strat,'direction':direction,'signal_epoch':epoch,
+                                           'entry':round(entry,5),'risk_distance':round(risk,8),'stop':round(entry-sign*risk,5),
+                                           'tp1':round(entry+sign*risk*0.5,5),'tp2':round(entry+sign*risk,5),
+                                           'tp3':round(entry+sign*risk*1.5,5),'opened_epoch':epoch,'expires_epoch':epoch+1800,
+                                           'status':'OPEN_SIMULATED','terminal_R':None}
+                                    active.append(setup);stats['setups']+=1;log_setup(setup);save_state()
+                                    print(f"[SCALP-SIGNAL] {direction} strategy={strat} entry={entry:.5f} SL={setup['stop']:.5f} TP1={setup['tp1']:.5f} TP2={setup['tp2']:.5f} TP3={setup['tp3']:.5f} | SIMULATED ONLY",flush=True)
+                        current={'ts':minute,'open':price,'high':price,'low':price,'close':price}
+                    else:
+                        # Ignore out-of-order ticks for candle construction.
+                        continue
+                    # Tick-by-tick simulated position tracking. No order API is called.
+                    for setup in list(active):
+                        sign=1 if setup['direction']=='BUY' else -1
+                        stop_hit=price<=setup['stop'] if sign==1 else price>=setup['stop']
+                        tp3_hit=price>=setup['tp3'] if sign==1 else price<=setup['tp3']
+                        tp2_hit=price>=setup['tp2'] if sign==1 else price<=setup['tp2']
+                        tp1_hit=price>=setup['tp1'] if sign==1 else price<=setup['tp1']
+                        if stop_hit:
+                            close_setup(setup,'SL',price,epoch);active.remove(setup)
+                        elif tp3_hit:
+                            close_setup(setup,'TP3',price,epoch);active.remove(setup)
+                        elif tp2_hit:
+                            close_setup(setup,'TP2',price,epoch);active.remove(setup)
+                        elif tp1_hit:
+                            close_setup(setup,'TP1',price,epoch);active.remove(setup)
+                        elif epoch>=setup['expires_epoch']:
+                            close_setup(setup,'TIMEOUT',price,epoch);active.remove(setup)
+                    if epoch%30==0: save_state()
         except Exception as exc:
-            print(f'[LIVE-MONITOR][WARNING] {type(exc).__name__}: {exc}; reconnecting in {delay}s',flush=True)
+            print(f'[SCALP-MONITOR][WARNING] {type(exc).__name__}: {exc}; reconnecting in {delay}s',flush=True)
             await asyncio.sleep(delay);delay=min(delay*2,60)
 
 async def main():
-    print('QUINT CAPITAL V75 RESEARCH ENGINE v1.2 — SINGLE FILE / 7-DAY BACKTEST',flush=True)
-    print('ANALYSIS ONLY — NO TRADE EXECUTION — HISTORICAL BACKTEST + PUBLIC TICK MONITOR',flush=True)
+    print('QUINT CAPITAL V75 SCALPING MONITOR v1.0',flush=True)
+    print('ANALYSIS ONLY — NO TRADE EXECUTION — LIVE SIGNALS + SIMULATED SETUP TRACKING',flush=True)
     DATA_DIR.mkdir(parents=True,exist_ok=True)
-    print(f'[STORAGE] Data directory: {DATA_DIR}; existing files will not be deleted.',flush=True)
-    try:
-        if should_run():
-            days=max(1,min(int(os.getenv('BACKTEST_DAYS','7')),180))
-            print(f'[AUTO-BACKTEST] Starting Deriv historical run for {days} days.',flush=True)
-            summary=await run_backtest(days)
-            mark_success(summary)
-            print('[AUTO-BACKTEST] SUCCESS; persistent schedule marker updated.',flush=True)
-        else:
-            print('[AUTO-BACKTEST] Skipped; last successful run is still within interval.',flush=True)
-    except Exception as exc:
-        print(f'[AUTO-BACKTEST][ERROR] {type(exc).__name__}: {exc}',flush=True)
-        print('[AUTO-BACKTEST] Failure is non-fatal; continuing to public live tick monitoring.',flush=True)
+    (DATA_DIR/'scalping').mkdir(parents=True,exist_ok=True)
+    print(f'[STORAGE] Persistent data directory: {DATA_DIR}; existing files will not be deleted.',flush=True)
+    print(f'[CONFIG] symbol={SYMBOL} | entry=M1 closed candle | context=completed M5/M15 | SL=1x ATR14 | targets=0.5R/1R/1.5R | timeout=30 minutes',flush=True)
+    print('[CONFIG] One simulated setup at a time. No orders are submitted.',flush=True)
     await live_heartbeat()
 
 async def run():

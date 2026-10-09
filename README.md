@@ -1,23 +1,25 @@
-# Quint Capital V75 Research Engine v1.2
+# Quint Capital V75 Scalping Monitor v1.0
 
-Analysis only. No trade execution, account authorization, or order placement.
+**Analysis only. No trade execution.** The monitor listens to public Deriv ticks, builds closed M1 candles, checks completed M5/M15 context, emits simulated BUY/SELL setups, and records hypothetical outcomes.
 
-## Included files
-- `main.py`: complete single-file system: historical M1 candle downloader, strategy research/backtest, CSV/JSON reporting, daily backtest marker, and public tick monitor.
+## Files
+- `main.py`: complete single-file monitor and signal logic.
 - `requirements.txt`: WebSocket dependency.
-- `railway.json`: Railway start command and restart policy.
+- `railway.json`: Railway startup configuration.
 
 ## Deploy
-1. Upload/replace these files in the GitHub repository root.
-2. Keep `requirements.txt` as supplied.
-3. Railway should start with `python -u main.py` from `railway.json`.
-4. Set Railway variable `BACKTEST_DAYS=7` (optional; default is 7). `BACKTEST_MIN_INTERVAL_HOURS` defaults to 24. `DATA_DIR` defaults to `/app/data`; attach your existing persistent volume there.
-5. Do not delete the existing persistent volume.
+1. Replace the relevant files in your GitHub repository with these files.
+2. Commit and allow Railway to redeploy.
+3. Keep the persistent Railway volume mounted at `/app/data`.
+4. Set `DERIV_APP_ID` to your registered Deriv app ID if you have one. The code defaults to public test app ID `1089` if no app ID is set.
+5. Optional: set `DERIV_SYMBOL=R_75` and `DATA_DIR=/app/data`.
 
 ## Output
-Reports are written under `/app/data/backtests` by default: M1 history CSV, strategy results CSV, and JSON summary. Existing files are not intentionally deleted.
+- `/app/data/scalping/v75_scalping_setups.jsonl`: one JSON record per setup update/closure.
+- `/app/data/scalping/v75_scalping_state.json`: latest summary and any open simulated setup.
 
-## Important limitations
-- The code uses Deriv public WebSocket endpoints and cannot guarantee they are reachable from Railway. HTTP 520 must be diagnosed from deployment logs; changing the backtest length does not fix network/endpoint errors.
-- No successful live connection or historical download is claimed until Railway logs show candle retrieval and a completed report.
-- Cost deductions are illustrative sensitivity scenarios, not measured spreads/slippage. Backtest outcomes are research, not a guarantee of future performance.
+## Important limits
+- Signals require enough live closed candles to warm up the indicators (about 100 M1 candles, so roughly 100 minutes after a cold start). No historical bootstrap is required.
+- If Deriv rejects the WebSocket handshake (for example HTTP 520), the monitor cannot receive prices and therefore cannot generate or monitor signals. It retries with backoff; this is a connection problem, not a strategy result.
+- Stop/target levels use M1 ATR(14). TP1/TP2/TP3 are 0.5R/1R/1.5R. A setup is closed when the first target/stop is touched or after 30 minutes. Outcomes are hypothetical and omit verified spread, slippage, and execution costs. Do not treat early results as evidence of profitability.
+- This package does not place orders or connect to MT5.
