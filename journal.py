@@ -3,9 +3,9 @@ import os
 import time
 from pathlib import Path
 
-ANALYSIS_JOURNAL_FILE = os.getenv("ANALYSIS_JOURNAL_FILE", "/app/data/v75_analysis_history_v35.jsonl")
-SETUP_JOURNAL_FILE = os.getenv("SETUP_JOURNAL_FILE", "/app/data/v75_setups_v35.json")
-ACTIVE_SETUPS_FILE = os.getenv("ACTIVE_SETUPS_FILE", "/app/data/v75_active_setups_v35.json")
+ANALYSIS_JOURNAL_FILE = os.getenv("ANALYSIS_JOURNAL_FILE", "/app/data/v75_scalp_analysis.jsonl")
+SETUP_JOURNAL_FILE = os.getenv("SETUP_JOURNAL_FILE", "/app/data/v75_scalp_setups.json")
+ACTIVE_SETUPS_FILE = os.getenv("ACTIVE_SETUPS_FILE", "/app/data/v75_scalp_active.json")
 MAX_ANALYSIS_JOURNAL_BYTES = int(os.getenv("MAX_ANALYSIS_JOURNAL_BYTES", str(25 * 1024 * 1024)))
 MAX_SETUP_HISTORY = int(os.getenv("MAX_SETUP_HISTORY", "5000"))
 
@@ -86,7 +86,7 @@ def make_setup_record(x, candle):
     s = x.get("setup") or {}
     direction = "BUY" if x.get("state") == "BUY SETUP" else "SELL"
     return {
-        "id": f"V75-v35-{int(candle['ts'])}-{direction}",
+        "id": f"V75-scalp-{int(candle['ts'])}-{direction}",
         "created_ts": int(candle["ts"]),
         "direction": direction,
         "state_at_creation": x.get("state"),
