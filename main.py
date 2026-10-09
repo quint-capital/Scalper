@@ -6,10 +6,21 @@ import asyncio, csv, json, math, os, statistics, time
 from contextlib import asynccontextmanager
 from pathlib import Path
 import websockets
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+def _ensure_app_id(url, fallback_app_id=None):
+    """Ensure a configured Deriv WebSocket URL includes an app_id query parameter."""
+    if not url:
+        return url
+    parts = urlsplit(url.strip())
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if not query.get('app_id'):
+        query['app_id'] = fallback_app_id or os.getenv('DERIV_APP_ID', '1089')
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 DEFAULT_WS_URLS = [
-    os.getenv('DERIV_WS_URL', 'wss://ws.derivws.com/websockets/v3?app_id=1089'),
-    'wss://frontend.binaryws.com/websockets/v3?l=EN&app_id=1089',
+    _ensure_app_id(os.getenv('DERIV_WS_URL', 'wss://ws.derivws.com/websockets/v3?app_id=1089')),
+    _ensure_app_id('wss://frontend.binaryws.com/websockets/v3?l=EN&app_id=1089'),
 ]
 @asynccontextmanager
 async def connect_deriv():
@@ -277,8 +288,8 @@ DATA_DIR=Path(os.getenv('DATA_DIR','/app/data'))
 MARKER=DATA_DIR/'v75_research_last_success.json'
 SYMBOL=os.getenv('DERIV_SYMBOL','R_75')
 DEFAULT_WS_URLS=[
-    os.getenv('DERIV_WS_URL','wss://ws.derivws.com/websockets/v3?app_id=1089'),
-    'wss://frontend.binaryws.com/websockets/v3?l=EN&app_id=1089',
+    _ensure_app_id(os.getenv('DERIV_WS_URL','wss://ws.derivws.com/websockets/v3?app_id=1089')),
+    _ensure_app_id('wss://frontend.binaryws.com/websockets/v3?l=EN&app_id=1089'),
 ]
 @asynccontextmanager
 async def connect_deriv():
