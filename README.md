@@ -34,6 +34,10 @@
 - If a registered ID still returns HTTP 520, test the same endpoint from a different network/runtime and check Deriv service status. HTTP 520 is returned during the handshake, before this monitor sends a market-data request, so it is not caused by the scalping signal rules.
 - Confirm the Railway Volume is attached to this exact service with mount path `/app/data`. A correctly attached volume should provide `RAILWAY_VOLUME_MOUNT_PATH` at runtime. The marker file by itself does not prove persistence.
 
-## v1.2 entry-only experiment
 
-This package adds an M1 pullback/resumption gate to all entry paths while leaving the existing stop-loss and target calculations unchanged. The report prints `ENTRY GATE`, its pass/fail status, and the reason. It remains analysis-only and does not place orders. Treat it as an experimental branch; compare setup count, win rate, average terminal R, stop-outs, and skipped-signal shadow outcomes against the baseline before adopting it.
+## v1.3 direction-aware entry experiment
+- Evaluates bullish and bearish structural transitions independently; a single bearish clue no longer forces the transition direction.
+- Before a setup can be accepted, M1 must show at least two counter-direction candles in the prior five candles, followed by a close through the recent three-candle range in the proposed direction.
+- The entry gate status is included in the analysis output as `entry_gate` for diagnostics.
+- Stop-loss, risk-cap, TP1/TP2/TP3 and geometry calculations are unchanged from the supplied baseline.
+- This is an experimental filter, not a claim of improved profitability. Compare a meaningful sample of completed setups against the previous version.
