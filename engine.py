@@ -223,6 +223,37 @@ def _continuation_context(frames, direction):
     return {'valid':score>=65,'kind':kind,'reasons':reasons,'score':min(100,score)}
 
 
+def _entry_pullback_confirmation(frames, direction):
+    """Entry-only experiment: require pullback pressure, then M1 resumption.
+
+    This gate does not alter SL/TP geometry or the underlying structure scores.
+    It requires at least two counter-direction candles among the previous five
+    completed M1 candles, followed by a directional candle that closes beyond
+    the previous candle's extreme.
+    """
+    m1 = frames.get('M1', [])
+    if direction not in ('BULLISH', 'BEARISH') or len(m1) < 7:
+        return False, 'insufficient M1 candles for pullback confirmation'
+    prior = m1[-6:-1]
+    current = m1[-1]
+    counter = 0
+    for candle in prior:
+        if direction == 'BULLISH' and candle['close'] < candle['open']:
+            counter += 1
+        elif direction == 'BEARISH' and candle['close'] > candle['open']:
+            counter += 1
+    if counter < 2:
+        return False, f'pullback gate: only {counter}/2 required counter-direction M1 candles'
+    previous = m1[-2]
+    if direction == 'BULLISH':
+        resumed = current['close'] > current['open'] and current['close'] > previous['high']
+    else:
+        resumed = current['close'] < current['open'] and current['close'] < previous['low']
+    if not resumed:
+        return False, 'pullback gate: no directional M1 close beyond previous candle extreme'
+    return True, 'pullback + M1 resumption confirmed'
+
+
 def _structural_transition_context(frames, direction):
     """Detect an early structural transition against still-unflipped H4/H1 context.
 
@@ -417,7 +448,14 @@ def analyze(frames):
     continuation_entry_ok=(direction!='MIXED' and ready and continuation_ok and
                            structure_score>=45 and not adverse_micro and
                            not late_entry and not exhaustion_block)
-    transition_entry_ok=(ready and transition['valid'] and not late_entry and not exhaustion_block)
+    # ENTRY-ONLY EXPERIMENT v1.2: keep the existing stop-loss and target
+    # construction untouched; require a completed M1 pullback/resumption for
+    # every entry path (reversal, continuation, and structural transition).
+    entry_direction = transition_direction if (ready and transition['valid']) else direction
+    pullback_confirmed, pullback_reason = _entry_pullback_confirmation(frames, entry_direction)
+    reversal_ok = reversal_ok and pullback_confirmed
+    continuation_entry_ok = continuation_entry_ok and pullback_confirmed
+    transition_entry_ok=(ready and transition['valid'] and not late_entry and not exhaustion_block and pullback_confirmed)
     trigger_ok=reversal_ok or continuation_entry_ok or transition_entry_ok
     if transition_entry_ok:
         direction=transition_direction
@@ -435,7 +473,7 @@ def analyze(frames):
     elif direction!='MIXED' and ready and trigger_ok:
         state='BUY SETUP' if direction=='BULLISH' else 'SELL SETUP'
     elif direction!='MIXED' and ready and (structure_score>=45 or continuation['score']>=60):
-        state='WAIT — MOVE EXHAUSTED' if exhaustion_block else ('ARMED — WAIT FOR PULLBACK' if (late_entry or exhaustion_wait) else 'ARMED — WAIT FOR CONFIRMATION')
+        state='WAIT — MOVE EXHAUSTED' if exhaustion_block else ('ARMED — WAIT FOR ENTRY PULLBACK' if not pullback_confirmed else ('ARMED — WAIT FOR PULLBACK' if (late_entry or exhaustion_wait) else 'ARMED — WAIT FOR CONFIRMATION'))
     else:
         state='NO TRADE'
     if m1['volatility']=='EXTREME_EXPANSION': state='WAIT — EXTREME VOLATILITY'
@@ -465,7 +503,9 @@ def analyze(frames):
             'transition_reasons':transition.get('reasons',[]),
             'exhaustion_score':exhaustion_score,'exhaustion_level':exhaustion_level,
             'exhaustion_reasons':exhaustion_reasons[-20:],
-            'trigger_reasons':trigger_reasons[-12:],'trigger_conflicts':trigger_conflicts[-10:]}
+            'trigger_reasons':trigger_reasons[-12:],'trigger_conflicts':trigger_conflicts[-10:],
+            'entry_gate':'PULLBACK_RESUMPTION_V1_2','entry_gate_passed':pullback_confirmed,
+            'entry_gate_reason':pullback_reason}
 
 
 def report(x):
@@ -475,6 +515,8 @@ def report(x):
            f"TRIGGER SCORE: {x['trigger_score']}/100 (NOT A PROBABILITY)",
            f"CONFIDENCE: {x['confidence']}",f"ENTRY CONFIRMATIONS: {x['confirmation_count']}",
            f"ENTRY QUALITY: {x['entry_quality']}",f"SETUP TYPE: {x.get('setup_type','NONE')}",
+           f"ENTRY GATE: {x.get('entry_gate','BASELINE')} | PASS={x.get('entry_gate_passed','N/A')}",
+           f"ENTRY GATE REASON: {x.get('entry_gate_reason','not evaluated')}",
            f"CONTINUATION SCORE: {x.get('continuation_score',0)}/100",
            f"TRANSITION SCORE: {x.get('transition_score',0)}/100",
            f"EXHAUSTION: {x['exhaustion_level']} ({x['exhaustion_score']}/100)"]
