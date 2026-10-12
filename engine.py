@@ -113,18 +113,27 @@ def _setup(frames, direction, r):
     # If nearby structure leaves less than 0.75R room, skip rather than
     # pretending the target is realistically reachable.
     opposing = _nearest_pivot(m5[-30:], direction, entry)
-    min_rr = float(os.getenv("SCALP_TP1_RR", "0.75"))
+    min_rr = float(os.getenv("SCALP_TP1_RR", "0.40"))
     max_tp1_rr = float(os.getenv("SCALP_TP1_MAX_RR", "1.00"))
     if direction == 'BULLISH':
         structural_dist = (opposing - entry) if opposing is not None else 0
     else:
         structural_dist = (entry - opposing) if opposing is not None else 0
 
-    if structural_dist >= min_rr * risk:
+    # v3.7: more responsive TP1 geometry. A closer structural target is
+    # acceptable from 0.40R upward; do not reject solely because it misses
+    # the old 0.75R preference. If no confirmed opposing pivot is available,
+    # use a conservative 0.50R TP1 and label it explicitly as ATR fallback.
+    if opposing is None:
+        tp1_dist = 0.50 * risk
+        tp1_basis = '0.50R fallback — no confirmed opposing M5 pivot'
+    elif structural_dist >= min_rr * risk:
         tp1_dist = min(structural_dist, max_tp1_rr * risk)
         tp1_basis = 'M5 opposing structure'
     else:
         return {'quality':'SCALP TARGET TOO CLOSE — SKIP','entry':entry,'sl':sl,'risk':risk,
+                'structural_dist':structural_dist,'required_dist':min_rr*risk,'min_rr':min_rr,
+                'opposing_pivot':opposing,
                 'reason':f'nearest M5 opposing structure offers less than {min_rr:.2f}R'}
 
     tp2_dist = 1.25 * risk
@@ -243,6 +252,23 @@ def _entry_confirmation(frames, direction):
     valid=opposite>=1 and resumption
     reason='one-candle pullback + directional close confirmed' if valid else ('need at least 1 counter-direction candle' if opposite<1 else 'no close through recent 3-candle range')
     return {'valid':valid, 'reason':reason, 'pullback_candles':opposite, 'resumption':resumption}
+
+def _continuation_fast_confirmation(frames, direction, readings):
+    """Alternative confirmation for clean continuation displacement only."""
+    c=frames.get('M1', [])
+    if len(c) < 8 or direction not in ('BULLISH','BEARISH'):
+        return {'valid':False,'reason':'insufficient M1 candles for continuation'}
+    last=c[-1]
+    directional_close = last['close'] > last['open'] if direction=='BULLISH' else last['close'] < last['open']
+    x=readings.get('M1', {})
+    structural_break = x.get('bos')==direction or x.get('mss')==direction
+    displacement = x.get('displacement')==direction
+    extended = x.get('extension')=='EXTENDED'
+    exhausted = x.get('exhaustion',{}).get('score',0) >= 60
+    valid = directional_close and (structural_break or displacement) and not extended and not exhausted
+    reason = 'continuation displacement confirmed without mandatory pullback' if valid else 'continuation fast path conditions incomplete'
+    return {'valid':valid,'reason':reason,'pullback_candles':0,'resumption':directional_close,'continuation_fast_path':True}
+
 
 def _structural_transition_context(frames, direction):
     """Detect an early structural transition against still-unflipped H4/H1 context.
@@ -447,6 +473,13 @@ def analyze(frames):
     transition_entry_ok=(ready and transition['valid'] and not late_entry and not exhaustion_block)
     trigger_ok=reversal_ok or continuation_entry_ok or transition_entry_ok
     entry_gate=_entry_confirmation(frames, transition_direction if transition_entry_ok else direction)
+    # v3.7: continuation setups get a separate, less restrictive route. They
+    # still need directional M1 close + BOS/MSS or displacement and remain
+    # blocked by extension, exhaustion, adverse microstructure and geometry.
+    if trigger_ok and not entry_gate['valid'] and continuation_entry_ok:
+        fast_gate=_continuation_fast_confirmation(frames, direction, r)
+        if fast_gate['valid']:
+            entry_gate=fast_gate
     if trigger_ok and not entry_gate['valid']:
         trigger_ok=False
         reversal_ok=False
@@ -475,7 +508,15 @@ def analyze(frames):
 
     setup=_setup(frames,direction,r) if state in ('BUY SETUP','SELL SETUP') else None
     if setup and setup.get('quality') in ('RISK TOO WIDE — SKIP', 'SCALP TARGET TOO CLOSE — SKIP') and state in ('BUY SETUP','SELL SETUP'):
-        state='NO TRADE — SCALP GEOMETRY SKIP'
+        # Keep the existing risk rules unchanged, but expose the exact rejection
+        # reason and geometry values in Railway logs for evidence-led calibration.
+        detail=(f"{setup.get('quality')}: {setup.get('reason','no reason supplied')} | "
+                f"entry={setup.get('entry')} SL={setup.get('sl')} risk={setup.get('risk')}")
+        if 'structural_dist' in setup:
+            detail += (f" target_room={setup.get('structural_dist')} "
+                       f"required_room={setup.get('required_dist')} "
+                       f"nearest_M5_pivot={setup.get('opposing_pivot')}")
+        state=f'NO TRADE — SCALP GEOMETRY SKIP — {detail}'
         setup=None
     elif setup:
         setup['quality']='TRIGGERED' if state in ('BUY SETUP','SELL SETUP') else 'WAITING'

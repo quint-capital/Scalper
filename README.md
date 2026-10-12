@@ -1,12 +1,12 @@
-# Quint Capital V75 Scalping Monitor v1.0
+# Quint Capital V75 Scalping Monitor v3.7
 
 **Analysis-only. No trade execution.** This package adapts the uploaded Quint Capital V75 v3.5 engine for short-horizon scalping research.
 
 ## Scalping design
 - M1 is the entry/monitoring timeframe; M5 and M15 provide short-term context. Higher timeframes remain available as background filters.
 - Structural local stop-loss based on M1/M5 swings and volatility.
-- TP1 defaults to 0.75R (official simulated exit), TP2 is a 1.25R milestone, and TP3 is a 1.75R milestone.
-- TP1 is only allowed when the nearest opposing M5 pivot offers enough room; otherwise the setup is skipped.
+- TP1 is structure-aware with a 0.40R minimum room by default (or labelled 0.50R fallback when no confirmed opposing M5 pivot exists); TP2 is a 1.25R milestone and TP3 is a 1.75R milestone.
+- Continuation entries have a separate M1 displacement/BOS/MSS confirmation path. Extension, exhaustion, adverse microstructure and stop-risk protections remain active.
 - One active setup at a time and one setup per structural move.
 - Live tick feed is aggregated into M1 candles; setups are evaluated using completed candles.
 - Results and analysis are stored in separate `v75_scalp_*` files under `/app/data`, avoiding mixing new scalping outcomes with the prior v3.5 journals. Existing market-history file is retained.
@@ -41,3 +41,8 @@
 - The entry gate status is included in the analysis output as `entry_gate` for diagnostics.
 - Stop-loss, risk-cap, TP1/TP2/TP3 and geometry calculations are unchanged from the supplied baseline.
 - This is an experimental filter, not a claim of improved profitability. Compare a meaningful sample of completed setups against the previous version.
+
+## v3.7 more responsive entry experiment
+- See `CHANGELOG_V3_7_MORE_RESPONSIVE_ENTRIES.md`.
+- Default `SCALP_TP1_RR` is now 0.40; `SCALP_TP1_MAX_RR` remains 1.00.
+- Analysis-only: no broker order execution.
