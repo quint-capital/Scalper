@@ -3,9 +3,12 @@ import os
 import time
 from pathlib import Path
 
-ANALYSIS_JOURNAL_FILE = os.getenv("ANALYSIS_JOURNAL_FILE", "/app/data/v75_analysis_history_v35.jsonl")
-SETUP_JOURNAL_FILE = os.getenv("SETUP_JOURNAL_FILE", "/app/data/v75_setups_v35.json")
-ACTIVE_SETUPS_FILE = os.getenv("ACTIVE_SETUPS_FILE", "/app/data/v75_active_setups_v35.json")
+# Isolated v3.5 experiment journals. Intentionally do not reuse legacy journal
+# environment overrides, so this test starts with fresh performance records.
+_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "/app/data").strip() or "/app/data"
+ANALYSIS_JOURNAL_FILE = str(Path(_DATA_DIR) / "v75_analysis_history_v35.jsonl")
+SETUP_JOURNAL_FILE = str(Path(_DATA_DIR) / "v75_setups_v35.json")
+ACTIVE_SETUPS_FILE = str(Path(_DATA_DIR) / "v75_active_setups_v35.json")
 MAX_ANALYSIS_JOURNAL_BYTES = int(os.getenv("MAX_ANALYSIS_JOURNAL_BYTES", str(25 * 1024 * 1024)))
 MAX_SETUP_HISTORY = int(os.getenv("MAX_SETUP_HISTORY", "5000"))
 

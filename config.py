@@ -18,10 +18,12 @@ WS_URLS = [
 HISTORY_BOOTSTRAP_CANDLES = int(os.getenv("HISTORY_BOOTSTRAP_CANDLES", "10000"))
 HISTORY_BATCH_SIZE = int(os.getenv("HISTORY_BATCH_SIZE", "1000"))
 
-# Persistent analysis/outcome journal (stored on the Railway volume).
-ANALYSIS_JOURNAL_FILE = os.getenv("ANALYSIS_JOURNAL_FILE", "/app/data/v75_scalp_analysis.jsonl")
-SETUP_JOURNAL_FILE = os.getenv("SETUP_JOURNAL_FILE", "/app/data/v75_scalp_setups.json")
-ACTIVE_SETUPS_FILE = os.getenv("ACTIVE_SETUPS_FILE", "/app/data/v75_scalp_active.json")
+# Isolated v3.5 experiment journals; keep diagnostics aligned with journal.py.
+# These names are version-specific so the old performance records are not reused.
+_V35_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "/app/data").strip() or "/app/data"
+ANALYSIS_JOURNAL_FILE = os.path.join(_V35_DATA_DIR, "v75_analysis_history_v35.jsonl")
+SETUP_JOURNAL_FILE = os.path.join(_V35_DATA_DIR, "v75_setups_v35.json")
+ACTIVE_SETUPS_FILE = os.path.join(_V35_DATA_DIR, "v75_active_setups_v35.json")
 MAX_ANALYSIS_JOURNAL_BYTES = int(os.getenv("MAX_ANALYSIS_JOURNAL_BYTES", str(25 * 1024 * 1024)))
 MAX_SETUP_HISTORY = int(os.getenv("MAX_SETUP_HISTORY", "5000"))
 
