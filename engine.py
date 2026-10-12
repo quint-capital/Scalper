@@ -227,8 +227,10 @@ def _continuation_context(frames, direction):
 def _entry_confirmation(frames, direction):
     """Direction-aware M1 pullback/resumption gate; does not alter risk geometry."""
     c=frames.get('M1', [])
-    if len(c) < 8 or direction not in ('BULLISH','BEARISH'):
-        return {'valid':False, 'reason':'insufficient M1 candles', 'pullback_candles':0, 'resumption':False}
+    if direction not in ('BULLISH','BEARISH'):
+        return {'valid':False, 'reason':f'no directional bias ({direction})', 'pullback_candles':0, 'resumption':False}
+    if len(c) < 8:
+        return {'valid':False, 'reason':f'insufficient M1 candles ({len(c)}/8)', 'pullback_candles':0, 'resumption':False}
     # Use only the five completed candles before the latest completed candle.
     prior=c[-6:-1]
     last=c[-1]
@@ -502,7 +504,7 @@ def analyze(frames):
 
 
 def report(x):
-    lines=['QUINT CAPITAL V75 LIVE INTELLIGENCE v3.4','ANALYSIS ONLY — NO TRADE EXECUTION','='*68,
+    lines=['QUINT CAPITAL V75 LIVE INTELLIGENCE v1.3.1 DIAGNOSTICS','ANALYSIS ONLY — NO TRADE EXECUTION','='*68,
            f"STATE: {x['state']}",f"MARKET BIAS: {x['direction']}",
            f"STRUCTURE SCORE: {x['structure_score']}/100 (NOT A PROBABILITY)",
            f"TRIGGER SCORE: {x['trigger_score']}/100 (NOT A PROBABILITY)",
@@ -511,6 +513,17 @@ def report(x):
            f"CONTINUATION SCORE: {x.get('continuation_score',0)}/100",
            f"TRANSITION SCORE: {x.get('transition_score',0)}/100",
            f"EXHAUSTION: {x['exhaustion_level']} ({x['exhaustion_score']}/100)"]
+    gate=x.get('entry_gate') or {}
+    lines += [
+        f"ENTRY GATE: {'PASS' if gate.get('valid') else 'BLOCK'}",
+        f"ENTRY GATE REASON: {gate.get('reason','not reported')}",
+        f"ENTRY GATE PULLBACK CANDLES: {gate.get('pullback_candles','n/a')} (need 2)",
+        f"ENTRY GATE RESUMPTION CLOSE: {gate.get('resumption','n/a')}",
+        f"CONTINUATION REASONS: {'; '.join(x.get('continuation_reasons',[])) or 'none'}",
+        f"TRANSITION REASONS: {'; '.join(x.get('transition_reasons',[])) or 'none'}",
+        f"TRIGGER REASONS: {'; '.join(x.get('trigger_reasons',[])) or 'none'}",
+        f"TRIGGER CONFLICTS: {'; '.join(x.get('trigger_conflicts',[])) or 'none'}"
+    ]
     for t in ('H4','H1','M30','M15','M5','M1'):
         r=x['readings'][t]
         lines.append(f"{t}: {r['trend']} | MOM={r['momentum']} | BOS={r['bos']} | MSS={r['mss']} | DISP={r['displacement']} | FVG={r['fvg']} | LIQ={r['liquidity']} | ZONE={r['zone']} | EXT={r['extension']} | VOL={r['volatility']} | N={r['count']}")
