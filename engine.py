@@ -238,9 +238,10 @@ def _entry_confirmation(frames, direction):
     else:
         opposite=sum(1 for z in prior if z['close'] > z['open'])
         resumption=last['close'] < min(z['low'] for z in prior[-3:])
-    # A real pullback and a close beyond the recent micro-range are both required.
+    # v3.6 experiment: allow one counter-direction candle, but still require
+    # the confirming close beyond the recent three-candle range.
     valid=opposite>=1 and resumption
-    reason='pullback + directional close confirmed' if valid else ('need at least 1 counter-direction candle' if opposite<1 else 'no close through recent 3-candle range')
+    reason='one-candle pullback + directional close confirmed' if valid else ('need at least 1 counter-direction candle' if opposite<1 else 'no close through recent 3-candle range')
     return {'valid':valid, 'reason':reason, 'pullback_candles':opposite, 'resumption':resumption}
 
 def _structural_transition_context(frames, direction):
@@ -502,7 +503,7 @@ def analyze(frames):
 
 
 def report(x):
-    lines=['QUINT CAPITAL V75 LIVE INTELLIGENCE v3.5 — ONE-CANDLE ENTRY TEST','ANALYSIS ONLY — NO TRADE EXECUTION','='*68,
+    lines=['QUINT CAPITAL V75 LIVE INTELLIGENCE v3.6 — ONE-CANDLE PAPER TEST','ANALYSIS ONLY — NO TRADE EXECUTION','='*68,
            f"STATE: {x['state']}",f"MARKET BIAS: {x['direction']}",
            f"STRUCTURE SCORE: {x['structure_score']}/100 (NOT A PROBABILITY)",
            f"TRIGGER SCORE: {x['trigger_score']}/100 (NOT A PROBABILITY)",
@@ -527,8 +528,8 @@ def report(x):
         if 'tp1' in s:
             tp1_dist=abs(s['tp1']-s['entry']); tp2_dist=abs(s['tp2']-s['entry']); tp3_dist=abs(s['tp3']-s['entry'])
             lines.append(f"- TP1: {s['tp1']:.5f} | DISTANCE={tp1_dist:.5f} points | RR={s.get('tp1_rr', tp1_dist/s['risk'] if s.get('risk') else 0):.2f}R | BASIS={s.get('tp1_basis','1.25R fallback')}")
-            lines.append(f"- TP2: {s['tp2']:.5f} | DISTANCE={tp2_dist:.5f} points | RR=2.00R")
-            lines.append(f"- TP3: {s['tp3']:.5f} | DISTANCE={tp3_dist:.5f} points | RR=3.00R")
+            lines.append(f"- TP2: {s['tp2']:.5f} | DISTANCE={tp2_dist:.5f} points | RR=1.25R")
+            lines.append(f"- TP3: {s['tp3']:.5f} | DISTANCE={tp3_dist:.5f} points | RR=1.75R")
         else:
             lines.append(f"- QUALITY: {s.get('quality','STRUCTURAL')}")
     if x['confirmations']: lines += ['ENTRY CONFIRMATIONS:']+['- '+z for z in x['confirmations']]

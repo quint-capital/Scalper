@@ -83,16 +83,16 @@ def _journal_record(x, candle):
     }
 
 async def run():
-    print("QUINT CAPITAL V75 SCALPING MONITOR v1.0")
+    print("QUINT CAPITAL V75 SCALPING MONITOR v3.6 — ONE-CANDLE PAPER TEST")
     print("M1 SCALPING + M5/M15 CONTEXT + STRUCTURAL STOPS + 0.75R TP1 + 1.25R/1.75R MILESTONES + PERSISTENT PERFORMANCE JOURNAL")
-    print("REAL V75 TICK STREAM + PERSISTENT HISTORY + ANALYSIS ONLY")
+    print("REAL V75 TICK STREAM + FRESH V3.6 PAPER-OUTCOME JOURNAL + ANALYSIS ONLY — NO BROKER ORDERS")
     storage_diagnostics()
     history=load(); print(f"[DATA] M1 history loaded: {len(history)}")
     setups=load_setups(); active=load_active()
     print(f"[JOURNAL] Analysis journal: {ANALYSIS_JOURNAL_FILE}")
     print(f"[JOURNAL] Setup history: {len(setups)} | Active setups: {len(active)}")
     last_state=None; last_alert=0; retry_delay=5; last_setup_sig=None; last_alert_setup_sig=None
-    # v3.4: one trade at a time, and one trade per structural move. A setup cycle
+    # v3.6: one tracked paper setup at a time, and one setup per structural move. A setup cycle
     # is consumed when a trade is created and cannot be reused until the market
     # leaves BUY/SELL SETUP state and forms a fresh trigger cycle.
     move_cycle_locked=False
@@ -139,7 +139,7 @@ async def run():
                 if changed:
                     save_active(active); save_setups(setups)
 
-                # v3.4: one active trade at a time + one trade per structural move.
+                # v3.6: one active tracked paper setup at a time + one setup per structural move.
                 # A changed SL/TP/entry signature inside the same move must NOT
                 # create another trade. The market must first leave SETUP state,
                 # then produce a genuinely fresh setup cycle.
@@ -172,7 +172,7 @@ async def run():
                     print(performance_text(summary))
 
                 now=time.time()
-                # v3.4: alerts are still tied to a genuinely fresh setup, never
+                # v3.6: alerts are still tied to a genuinely fresh setup, never
                 # to repeated signatures from the same structural move.
                 alertable = x["state"] in ("BUY SETUP","SELL SETUP","WAIT — EXTREME VOLATILITY")
                 new_setup_alert = bool(sig and sig != last_alert_setup_sig)
