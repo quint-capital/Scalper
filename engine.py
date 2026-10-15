@@ -73,11 +73,9 @@ def _setup(frames, direction, r):
         m5_stop = (max(m5_levels) - 0.15 * a5) if m5_levels else (min(z['low'] for z in m5[-6:]) - 0.15 * a5)
         sl = max(m1_stop, m5_stop)
         min_risk = max(0.75 * a1, 0.20 * a5)
-        # v3.5 adaptive risk gate: strong structural setups may legitimately
-        # require a little more room on V75. The old hard cap was a major
-        # opportunity bottleneck because valid continuation/transition setups
-        # were discarded solely for stop width. Weak setups still keep the
-        # tighter cap.
+        # Risk-width rejection is disabled: preserve the structural stop even
+        # when it is wider than the former adaptive cap. The cap is retained
+        # below only as a diagnostic/reference value, not as a rejection rule.
         strength = max(float(r.get('structure_score', 0)), float(r.get('trigger_score', 0)),
                        float(r.get('continuation_score', 0)), float(r.get('transition_score', 0)))
         strong = strength >= 80
@@ -86,8 +84,8 @@ def _setup(frames, direction, r):
         if entry - sl < min_risk:
             sl = entry - min_risk
         risk = entry - sl
-        if risk <= 0 or risk > max_risk:
-            return {'quality':'RISK TOO WIDE — SKIP','entry':entry,'sl':sl,'risk':risk,'reason':f'structural stop exceeds adaptive V75 risk cap ({max_risk:.5f})'}
+        if risk <= 0:
+            return {'quality':'INVALID STOP GEOMETRY — SKIP','entry':entry,'sl':sl,'risk':risk,'reason':'stop-loss must be below entry for BUY setups'}
     else:
         m1_levels = [v for _, v in h1 if v > entry]
         m5_levels = [v for _, v in h5 if v > entry]
@@ -95,7 +93,7 @@ def _setup(frames, direction, r):
         m5_stop = (min(m5_levels) + 0.15 * a5) if m5_levels else (max(z['high'] for z in m5[-6:]) + 0.15 * a5)
         sl = min(m1_stop, m5_stop)
         min_risk = max(0.75 * a1, 0.20 * a5)
-        # Same adaptive risk gate for SELL setups.
+        # Risk-width rejection is disabled for SELL setups as well.
         strength = max(float(r.get('structure_score', 0)), float(r.get('trigger_score', 0)),
                        float(r.get('continuation_score', 0)), float(r.get('transition_score', 0)))
         strong = strength >= 80
@@ -104,8 +102,8 @@ def _setup(frames, direction, r):
         if sl - entry < min_risk:
             sl = entry + min_risk
         risk = sl - entry
-        if risk <= 0 or risk > max_risk:
-            return {'quality':'RISK TOO WIDE — SKIP','entry':entry,'sl':sl,'risk':risk,'reason':f'structural stop exceeds adaptive V75 risk cap ({max_risk:.5f})'}
+        if risk <= 0:
+            return {'quality':'INVALID STOP GEOMETRY — SKIP','entry':entry,'sl':sl,'risk':risk,'reason':'stop-loss must be above entry for SELL setups'}
 
     # Scalping target geometry: the official simulated exit is TP1.
     # Use a modest first target (0.75R) to test quick V75 moves, but do not
@@ -113,7 +111,6 @@ def _setup(frames, direction, r):
     # If nearby structure leaves less than 0.75R room, skip rather than
     # pretending the target is realistically reachable.
     opposing = _nearest_pivot(m5[-30:], direction, entry)
-    min_rr = float(os.getenv("SCALP_TP1_RR", "0.40"))
     max_tp1_rr = float(os.getenv("SCALP_TP1_MAX_RR", "1.00"))
     if direction == 'BULLISH':
         structural_dist = (opposing - entry) if opposing is not None else 0
@@ -127,26 +124,23 @@ def _setup(frames, direction, r):
     if opposing is None:
         tp1_dist = 0.50 * risk
         tp1_basis = '0.50R fallback — no confirmed opposing M5 pivot'
-    elif structural_dist >= min_rr * risk:
+    elif structural_dist > 0:
+        # In inverse mode, this original TP1 becomes the inverse stop-loss.
+        # Keep the structure-aware target, but do not reject it on an RR threshold.
         tp1_dist = min(structural_dist, max_tp1_rr * risk)
-        tp1_basis = 'M5 opposing structure'
+        tp1_basis = 'M5 opposing structure (source target; becomes inverse SL)'
     else:
-        return {'quality':'SCALP TARGET TOO CLOSE — SKIP','entry':entry,'sl':sl,'risk':risk,
-                'structural_dist':structural_dist,'required_dist':min_rr*risk,'min_rr':min_rr,
-                'opposing_pivot':opposing,
-                'reason':f'nearest M5 opposing structure offers less than {min_rr:.2f}R'}
+        # If a pivot is not usable, retain a deterministic fallback level.
+        tp1_dist = 0.50 * risk
+        tp1_basis = '0.50R fallback — no usable opposing M5 pivot'
 
-    tp2_dist = 1.25 * risk
-    tp3_dist = 1.75 * risk
-    if direction == 'BULLISH':
-        targets = [entry + tp1_dist, entry + tp2_dist, entry + tp3_dist]
-    else:
-        targets = [entry - tp1_dist, entry - tp2_dist, entry - tp3_dist]
+    # Only one source target is needed: it will become the inverse stop-loss.
+    source_tp1 = entry + tp1_dist if direction == 'BULLISH' else entry - tp1_dist
 
     return {
         'quality':'STRUCTURAL-LOCAL',
-        'entry':entry,'sl':sl,'tp1':targets[0],'tp2':targets[1],'tp3':targets[2],
-        'risk':risk,'tp1_rr':round(tp1_dist/risk,2),'tp1_basis':tp1_basis,
+        'entry':entry,'sl':sl,'tp1':source_tp1,
+        'risk':risk,'tp1_basis':tp1_basis,
         'sl_basis':'M1/M5 local invalidation','risk_cap':round(max_risk,5),'risk_mode':'ADAPTIVE_STRONG' if strong else 'STANDARD',
     }
 
@@ -346,6 +340,35 @@ def _structural_transition_context(frames, direction):
     valid=(bridge >= 1 and micro_events >= 2 and exhaustion < 60 and adverse < 2 and score >= 68)
     return {'valid':valid,'score':score,'kind':'STRUCTURAL TRANSITION' if valid else 'NONE','reasons':reasons[-16:]}
 
+
+def _invert_setup_geometry(setup, direction, state, setup_type):
+    """Reverse a completed signal and swap source SL/TP1 into inverse geometry."""
+    original_direction = direction
+    if setup and state in ("BUY SETUP", "SELL SETUP") and "tp1" in setup and "sl" in setup:
+        original_sl = float(setup["sl"])
+        original_tp1 = float(setup["tp1"])
+        entry = float(setup["entry"])
+        inverse_direction = "BEARISH" if direction == "BULLISH" else "BULLISH"
+        inverse_state = "SELL SETUP" if state == "BUY SETUP" else "BUY SETUP"
+        setup["original_sl"] = original_sl
+        setup["original_tp1"] = original_tp1
+        setup["sl"] = original_tp1
+        setup["tp1"] = original_sl
+        setup["risk"] = abs(entry - setup["sl"])
+        setup.pop("tp2", None)
+        setup.pop("tp3", None)
+        setup.pop("tp1_rr", None)
+        setup.pop("tp2_rr", None)
+        setup.pop("tp3_rr", None)
+        setup["tp1_basis"] = "Original structural SL (swapped to inverse TP1)"
+        setup["sl_basis"] = "Original TP1 (swapped to inverse SL)"
+        setup["inverse"] = True
+        setup["original_direction"] = "BUY" if original_direction == "BULLISH" else "SELL"
+        direction = inverse_direction
+        state = inverse_state
+        setup_type = f"INVERSE OF {setup_type}"
+    return direction, state, setup_type, original_direction
+
 def analyze(frames):
     r={tf:summarize(frames.get(tf,[])) for tf in WEIGHTS}
     ready=all(len(frames.get(t,[]))>=MIN[t] for t in MIN)
@@ -507,9 +530,16 @@ def analyze(frames):
     if m1['volatility']=='EXTREME_EXPANSION': state='WAIT — EXTREME VOLATILITY'
 
     setup=_setup(frames,direction,r) if state in ('BUY SETUP','SELL SETUP') else None
-    if setup and setup.get('quality') in ('RISK TOO WIDE — SKIP', 'SCALP TARGET TOO CLOSE — SKIP') and state in ('BUY SETUP','SELL SETUP'):
-        # Keep the existing risk rules unchanged, but expose the exact rejection
-        # reason and geometry values in Railway logs for evidence-led calibration.
+
+    # DOUBLE-REVERSED EXPERIMENT:
+    # The uploaded inverse layer is intentionally not applied here. Reversing
+    # its direction and swapping its SL/TP1 a second time restores the source
+    # signal direction and original SL/TP1 geometry. This remains paper-only.
+    original_direction = direction
+
+    if setup and setup.get('quality') in ('INVALID STOP GEOMETRY — SKIP', 'SCALP TARGET TOO CLOSE — SKIP') and state in ('BUY SETUP','SELL SETUP'):
+        # Stop-width cap is disabled. Still reject mathematically invalid stop
+        # geometry and targets that cannot fit the strategy's target rules.
         detail=(f"{setup.get('quality')}: {setup.get('reason','no reason supplied')} | "
                 f"entry={setup.get('entry')} SL={setup.get('sl')} risk={setup.get('risk')}")
         if 'structural_dist' in setup:
@@ -529,7 +559,7 @@ def analyze(frames):
 
     entry_quality=('TRIGGERED' if trigger_ok else 'WAIT FOR PULLBACK' if late_entry else 'WAIT FOR CONFIRMATION')
     all_conflicts=(conflicts+trigger_conflicts)[-12:]
-    return {'readings':r,'direction':direction,'score':structure_score,'structure_score':structure_score,
+    return {'readings':r,'direction':direction,'original_direction':original_direction,'signal_mode':'DOUBLE_REVERSED_BASELINE','score':structure_score,'structure_score':structure_score,
             'trigger_score':trigger_score,'confidence':confidence,'state':state,
             'confirmations':trigger_reasons[-12:],'conflicts':all_conflicts,'setup':setup,'ready':ready,
             'confirmation_count':confirmation_count,'entry_quality':entry_quality,
@@ -544,8 +574,8 @@ def analyze(frames):
 
 
 def report(x):
-    lines=['QUINT CAPITAL V75 LIVE INTELLIGENCE v3.6 — ONE-CANDLE PAPER TEST','ANALYSIS ONLY — NO TRADE EXECUTION','='*68,
-           f"STATE: {x['state']}",f"MARKET BIAS: {x['direction']}",
+    lines=['QUINT CAPITAL V75 ADAPTIVE — ONE-CANDLE PAPER TEST','ADAPTIVE EXPERIMENT | SOURCE DIRECTION + SOURCE SL/TP1 GEOMETRY | PAPER ONLY — NO BROKER ORDERS','='*68,
+           f"STATE: {x['state']}",f"TEST SIGNAL: {x['direction']} (source direction: {x.get('original_direction','UNKNOWN')})",
            f"STRUCTURE SCORE: {x['structure_score']}/100 (NOT A PROBABILITY)",
            f"TRIGGER SCORE: {x['trigger_score']}/100 (NOT A PROBABILITY)",
            f"CONFIDENCE: {x['confidence']}",f"ENTRY CONFIRMATIONS: {x['confirmation_count']}",
@@ -567,10 +597,9 @@ def report(x):
         lines.append(f"- RISK: {s['risk']:.5f} points")
         if s.get('sl_basis'): lines.append(f"- SL BASIS: {s['sl_basis']}")
         if 'tp1' in s:
-            tp1_dist=abs(s['tp1']-s['entry']); tp2_dist=abs(s['tp2']-s['entry']); tp3_dist=abs(s['tp3']-s['entry'])
-            lines.append(f"- TP1: {s['tp1']:.5f} | DISTANCE={tp1_dist:.5f} points | RR={s.get('tp1_rr', tp1_dist/s['risk'] if s.get('risk') else 0):.2f}R | BASIS={s.get('tp1_basis','1.25R fallback')}")
-            lines.append(f"- TP2: {s['tp2']:.5f} | DISTANCE={tp2_dist:.5f} points | RR=1.25R")
-            lines.append(f"- TP3: {s['tp3']:.5f} | DISTANCE={tp3_dist:.5f} points | RR=1.75R")
+            tp1_dist=abs(s['tp1']-s['entry'])
+            lines.append(f"- TP1 (ONLY TAKE-PROFIT): {s['tp1']:.5f} | DISTANCE={tp1_dist:.5f} points")
+            lines.append('- SECOND REVERSAL: source SL and source TP1 geometry restored')
         else:
             lines.append(f"- QUALITY: {s.get('quality','STRUCTURAL')}")
     if x['confirmations']: lines += ['ENTRY CONFIRMATIONS:']+['- '+z for z in x['confirmations']]

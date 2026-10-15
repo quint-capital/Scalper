@@ -13,6 +13,7 @@ from config import *
 from data import DerivTicks
 from engine import analyze, report
 from alerts import send_telegram
+from learning import AdaptiveLearner, feature_groups
 from journal import (
     append_analysis, load_setups, save_setups, load_active, save_active,
     make_setup_record, update_setup, summarize_setups, performance_text, _setup_signature,
@@ -63,11 +64,13 @@ def _journal_record(x, candle):
         "price": float(candle["close"]),
         "state": x["state"],
         "market_bias": x["direction"],
+        "original_direction": x.get("original_direction", "UNKNOWN"),
+        "strategy": "QUTE_V75_ADAPTIVE",
         "structure_score": x["structure_score"],
         "trigger_score": x["trigger_score"],
         "confidence": x["confidence"],
         "entry_quality": x["entry_quality"],
-        "setup_type": x.get("setup_type", "NONE"),
+        "setup_family": "QUTE_V75_SCALPER",
         "continuation_score": x.get("continuation_score", 0),
         "transition_score": x.get("transition_score", 0),
         "entry_confirmations": x["confirmation_count"],
@@ -83,12 +86,29 @@ def _journal_record(x, candle):
     }
 
 async def run():
-    print("QUINT CAPITAL V75 SCALPING MONITOR v3.6 — ONE-CANDLE PAPER TEST")
-    print("M1 SCALPING + M5/M15 CONTEXT + STRUCTURAL STOPS + 0.75R TP1 + 1.25R/1.75R MILESTONES + PERSISTENT PERFORMANCE JOURNAL")
-    print("REAL V75 TICK STREAM + FRESH V3.6 PAPER-OUTCOME JOURNAL + ANALYSIS ONLY — NO BROKER ORDERS")
+    print("QUINT CAPITAL V75 ADAPTIVE — INDEPENDENT PAPER LEARNING SYSTEM")
+    print("SAME STARTING STRATEGY | ONLINE CONTEXT LEARNING | SHADOW OUTCOMES | NO EXECUTION")
+    print("REAL V75 TICK STREAM + INDEPENDENT ADAPTIVE PAPER JOURNAL — NO BROKER ORDERS")
     storage_diagnostics()
     history=load(); print(f"[DATA] M1 history loaded: {len(history)}")
     setups=load_setups(); active=load_active()
+    learner = AdaptiveLearner()
+    def _read_list(path):
+        try:
+            q=Path(path)
+            data=json.loads(q.read_text(encoding="utf-8")) if q.exists() else []
+            return data if isinstance(data,list) else []
+        except Exception:
+            return []
+    def _write_list(path, data, limit=5000):
+        q=Path(path); q.parent.mkdir(parents=True,exist_ok=True)
+        tmp=q.with_suffix(q.suffix+".tmp")
+        tmp.write_text(json.dumps(data[-limit:],separators=(",",":")),encoding="utf-8")
+        tmp.replace(q)
+    learning_active = _read_list(LEARNING_ACTIVE_FILE)
+    learning_history = _read_list(LEARNING_HISTORY_FILE)
+    print(f"[LEARN] Model loaded: {learner.state.get('resolved_candidates',0)} resolved shadow candidates")
+    print(f"[LEARN] Shadow history: {len(learning_history)} | Shadow active: {len(learning_active)}")
     print(f"[JOURNAL] Analysis journal: {ANALYSIS_JOURNAL_FILE}")
     print(f"[JOURNAL] Setup history: {len(setups)} | Active setups: {len(active)}")
     last_state=None; last_alert=0; retry_delay=5; last_setup_sig=None; last_alert_setup_sig=None
@@ -124,6 +144,28 @@ async def run():
                 # so Railway volume preserves the live decision history across deploys.
                 append_analysis(_journal_record(x, current))
 
+                # Update every candidate in the shadow journal, including candidates
+                # that the learner declined. This provides counterfactual feedback.
+                learning_changed = False
+                for candidate in learning_active[:]:
+                    if int(current["ts"]) <= int(candidate.get("created_ts", 0)):
+                        continue
+                    before = candidate.get("status")
+                    update_setup(candidate, current)
+                    if candidate.get("status") != before:
+                        learning_changed = True
+                    if candidate.get("status") == "CLOSED":
+                        if candidate.get("outcome") in ("TP1", "SL"):
+                            if learner.observe(candidate):
+                                print(f"[LEARN][OBSERVED] {candidate['id']} outcome={candidate['outcome']} R={candidate.get('realized_r')}")
+                        learning_history.append(candidate)
+                        learning_active.remove(candidate)
+                        learning_changed = True
+                if learning_changed:
+                    _write_list(LEARNING_ACTIVE_FILE, learning_active)
+                    _write_list(LEARNING_HISTORY_FILE, learning_history, LEARNING_MAX_SHADOW_HISTORY)
+                print(learner.summary())
+
                 # Update all open setups using only candles AFTER their creation.
                 changed=False
                 for s in active[:]:
@@ -131,11 +173,11 @@ async def run():
                         continue
                     before=s.get("status")
                     update_setup(s, current)
-                    if s.get("status") != before or s.get("tp1_hit") or s.get("tp2_hit") or s.get("tp3_hit"):
+                    if s.get("status") != before or s.get("tp1_hit"):
                         changed=True
                     if s.get("status") == "CLOSED":
                         setups.append(s); active.remove(s); changed=True
-                        print(f"[OUTCOME] {s['id']} -> {s['outcome']} | TP1={s['tp1_hit']} TP2={s['tp2_hit']} TP3={s['tp3_hit']} | MFE={s['max_favorable']:.2f}R MAE={s['max_adverse']:.2f}R")
+                        print(f"[QUTE OUTCOME] {s['id']} -> {s['outcome']} | PLANNED RR={s.get('planned_rr') if s.get('planned_rr') is not None else 'N/A'} | REALIZED R={s.get('realized_r', 'N/A')} | MFE={s['max_favorable']:.2f}R | MAE={s['max_adverse']:.2f}R | BARS={s.get('bars_observed', 0)}")
                 if changed:
                     save_active(active); save_setups(setups)
 
@@ -153,20 +195,44 @@ async def run():
 
                 can_open = (not active) and (not move_cycle_locked)
                 if sig and can_open:
-                    new_setup=make_setup_record(x, current)
-                    active.append(new_setup); save_active(active)
+                    candidate=make_setup_record(x, current)
+                    candidate["id"] = candidate["id"].replace("V75-DOUBLE-REVERSED-", "V75-ADAPTIVE-")
+                    candidate["strategy"] = "QUTE_V75_ADAPTIVE"
+                    candidate["directional_trend"] = x.get("direction")
+                    candidate["structure_score"] = x.get("structure_score")
+                    candidate["trigger_score"] = x.get("trigger_score")
+                    candidate["m1_zone"] = x.get("readings",{}).get("M1",{}).get("zone","UNKNOWN")
+                    candidate["m15_zone"] = x.get("readings",{}).get("M15",{}).get("zone","UNKNOWN")
+                    candidate["learning_features"] = feature_groups(candidate)
+                    candidate["learner_decision_ts"] = int(current["ts"])
+                    accepted, learner_reason = learner.evaluate(candidate)
+                    candidate["learner_accepted"] = bool(accepted)
+                    candidate["learner_decision"] = learner_reason
+                    # Every candidate is shadow-tracked to learn its outcome, whether
+                    # accepted as an active paper setup or filtered from active stats.
+                    shadow = dict(candidate)
+                    shadow["id"] = "SHADOW-" + str(candidate["id"])
+                    learning_active.append(shadow)
+                    _write_list(LEARNING_ACTIVE_FILE, learning_active)
                     last_setup_sig=sig
                     move_cycle_locked=True
-                    print(f"[JOURNAL] New {new_setup['direction']} setup captured: {new_setup['id']}")
-                    print(f"[TRADE FOUND] {new_setup['direction']} — ONE TRADE ONLY FOR THIS MOVE")
-                    print(f"[TRADE PARAMETERS] ENTRY={new_setup['entry']:.5f} | SL={new_setup['sl']:.5f} | TP1={new_setup['tp1']:.5f} | TP2={new_setup['tp2']:.5f} | TP3={new_setup['tp3']:.5f} | RISK={new_setup['risk']:.5f} | TP1_RR={new_setup['tp1_rr']:.2f}R")
-                    print(f"[JOURNAL] Active setups: {len(active)} | Historical setups: {len(setups)}")
+                    if accepted:
+                        active.append(candidate); save_active(active)
+                        print(f"[ADAPTIVE SETUP ACCEPTED] {candidate['id']} | DIRECTION={candidate['direction']}")
+                        print(f"[TRADE METRICS] ENTRY={candidate['entry']:.5f} | SL={candidate['sl']:.5f} | TP1={candidate['tp1']:.5f} | RISK={candidate['risk']:.5f} | REWARD={candidate['reward_distance']:.5f} | PLANNED RR={candidate['planned_rr']:.2f}:1")
+                        print(f"[LEARN DECISION] {learner_reason}")
+                        print(f"[JOURNAL] Active setups: {len(active)} | Historical setups: {len(setups)}")
+                    else:
+                        print(f"[ADAPTIVE FILTERED] {candidate['id']} | {learner_reason}")
+                        print("[SHADOW] Candidate remains tracked for outcome learning; it is not included in active setup performance.")
                 elif sig and active:
                     print('[SETUP BLOCKED] Active trade already exists — no second trade allowed')
                 elif sig and move_cycle_locked:
                     print('[SETUP BLOCKED] Same structural move already traded — waiting for a fresh move')
 
                 summary=summarize_setups(setups + active)
+                if summary.get("terminal", 0) >= 100 and summary.get("terminal", 0) % 10 == 0:
+                    print(f"[MILESTONE] {summary['terminal']} resolved ACTIVE paper setups reached. Save this run's report for the planned baseline comparison.")
                 if changed:
                     print("[JOURNAL] OUTCOME UPDATE")
                     print(performance_text(summary))
@@ -174,7 +240,9 @@ async def run():
                 now=time.time()
                 # v3.6: alerts are still tied to a genuinely fresh setup, never
                 # to repeated signatures from the same structural move.
-                alertable = x["state"] in ("BUY SETUP","SELL SETUP","WAIT — EXTREME VOLATILITY")
+                # Do not alert a setup that the adaptive learner filtered. Extreme-volatility
+                # warnings remain alertable independently of setup acceptance.
+                alertable = (x["state"] == "WAIT — EXTREME VOLATILITY") or (x["state"] in ("BUY SETUP", "SELL SETUP") and bool(active))
                 new_setup_alert = bool(sig and sig != last_alert_setup_sig)
                 state_alert = x["state"] != last_state
                 if alertable and (new_setup_alert or state_alert) and now-last_alert>=ALERT_COOLDOWN_SECONDS:

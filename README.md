@@ -1,48 +1,47 @@
-# Quint Capital V75 Scalping Monitor v3.7
+# Quint Capital V75 Adaptive — Independent Paper Learning System
 
-**Analysis-only. No trade execution.** This package adapts the uploaded Quint Capital V75 v3.5 engine for short-horizon scalping research.
+**Analysis-only. No broker orders. No MT5.** This is a separate experimental service based on the supplied QUTE V75 engine. It does not edit or share the original service's journals by default. Keep the original running unchanged.
 
-## Scalping design
-- M1 is the entry/monitoring timeframe; M5 and M15 provide short-term context. Higher timeframes remain available as background filters.
-- Structural local stop-loss based on M1/M5 swings and volatility.
-- TP1 is structure-aware with a 0.40R minimum room by default (or labelled 0.50R fallback when no confirmed opposing M5 pivot exists); TP2 is a 1.25R milestone and TP3 is a 1.75R milestone.
-- Continuation entries have a separate M1 displacement/BOS/MSS confirmation path. Extension, exhaustion, adverse microstructure and stop-risk protections remain active.
-- One active setup at a time and one setup per structural move.
-- Live tick feed is aggregated into M1 candles; setups are evaluated using completed candles.
-- Results and analysis are stored in separate `v75_scalp_*` files under `/app/data`, avoiding mixing new scalping outcomes with the prior v3.5 journals. Existing market-history file is retained.
+## What this version does
 
-## Deploy
-1. Upload the files in this folder to your GitHub repo.
-2. In Railway, mount the existing persistent volume at `/app/data`.
-3. Set `DERIV_SYMBOL=R_75` if needed.
-4. Set the Railway variable `DERIV_APP_ID` to your own registered Deriv application ID (create/register one through Deriv API settings). The default `1089` ID is for testing only. The monitor builds the official endpoint `wss://ws.derivws.com/websockets/v3?app_id=YOUR_ID`. You can override the full endpoint with `DERIV_WS_URL` if needed.
-5. Default bootstrap is 10,000 M1 candles. Override with `HISTORY_BOOTSTRAP_CANDLES`.
-6. Deploy and inspect logs for a successful WebSocket connection, historical candles and `[HEARTBEAT] Live ticks flowing`.
+- Starts from the existing entry logic and setup geometry; it does not rewrite the engine's entry, stop-loss, or TP1 formulas.
+- Creates an independent actual-paper journal and a separate **shadow journal** for every eligible setup candidate.
+- The shadow journal tracks outcomes even when the learner filters a candidate, so the model can learn from accepted and rejected candidates instead of only seeing its own accepted trades.
+- Learns online from realized R across multiple context groups: direction, structure-score band, trigger-score band, confirmations, trend alignment, M1/M5 agreement, exhaustion, and M15/M1 location.
+- Passes all candidates through during warm-up. Default warm-up is 30 resolved shadow candidates. After warm-up, it filters a candidate only when at least two sufficiently sampled context buckets show a cautious upper estimate below -0.05R. This is a conservative rule, not a guarantee of better performance.
+- Never changes entry, SL, TP1, direction calculation, or the underlying engine rules automatically. Adaptation is limited to an evidence-based setup acceptance filter.
+- Logs learner decisions and model summaries. The original service is not connected to this model.
+- Emits a milestone when 100 resolved active paper setups have been recorded. Review the comparison only after an adequate sample; this package does not automatically claim it is better.
 
-## Monitoring caveats
-- HTTP 520 means the server/gateway rejected or failed the handshake; changing the URL is a test, not a guarantee.
-- No live connection means no valid signals or performance observations.
-- Simulated OHLC outcomes can be ambiguous when stop and target are touched in the same M1 candle. Ambiguous cases are not counted as wins/losses.
-- No strategy is presumed profitable. Monitor enough completed setups and review results before considering changes.
-- `SCALP_TP1_RR` (default `0.75`) and `SCALP_TP1_MAX_RR` (default `1.00`) tune the first target.
+## Deploy as a separate Railway service
 
+1. Create a **new GitHub repository** for this folder, or a new branch/repository that is deployed as a different Railway service. Do not overwrite the original repository/service.
+2. Upload the contents of this folder to the new repository. `main.py` is the entry point used by the existing deployment setup.
+3. Create/attach a persistent Railway volume mounted at `/app/data` for the new service. Do not point the new service's environment variables at the original service's files.
+4. Set `DERIV_SYMBOL=R_75` if needed. Keep the WebSocket endpoint configuration from the original working package.
+5. Deploy and verify logs for `[DATA] Live stream active`, `[HEARTBEAT]` (where emitted by the existing data client), `[LEARN] Model loaded`, and the shadow/actual journals being written.
 
-## If Railway logs show HTTP 520 on the WebSocket handshake
+## Isolated default files
 
-- Confirm `DERIV_APP_ID` is your own registered Deriv app ID, then redeploy.
-- Keep the default official endpoint first; do not assume switching to another legacy hostname will fix an HTTP 520.
-- If a registered ID still returns HTTP 520, test the same endpoint from a different network/runtime and check Deriv service status. HTTP 520 is returned during the handshake, before this monitor sends a market-data request, so it is not caused by the scalping signal rules.
-- Confirm the Railway Volume is attached to this exact service with mount path `/app/data`. A correctly attached volume should provide `RAILWAY_VOLUME_MOUNT_PATH` at runtime. The marker file by itself does not prove persistence.
+- `/app/data/qute_adaptive_v75_history.json`
+- `/app/data/qute_adaptive_analysis_v1.jsonl`
+- `/app/data/qute_adaptive_setups_v1.json`
+- `/app/data/qute_adaptive_active_v1.json`
+- `/app/data/qute_adaptive_shadow_active_v1.json`
+- `/app/data/qute_adaptive_shadow_history_v1.json`
+- `/app/data/qute_adaptive_model_v1.json`
 
+All can be overridden through environment variables in `config.py`. The filenames are deliberately distinct from the original system's defaults.
 
-## v1.3 direction-aware entry experiment
-- Evaluates bullish and bearish structural transitions independently; a single bearish clue no longer forces the transition direction.
-- Before a setup can be accepted, M1 must show at least two counter-direction candles in the prior five candles, followed by a close through the recent three-candle range in the proposed direction.
-- The entry gate status is included in the analysis output as `entry_gate` for diagnostics.
-- Stop-loss, risk-cap, TP1/TP2/TP3 and geometry calculations are unchanged from the supplied baseline.
-- This is an experimental filter, not a claim of improved profitability. Compare a meaningful sample of completed setups against the previous version.
+## Learning safeguards and limitations
 
-## v3.7 more responsive entry experiment
-- See `CHANGELOG_V3_7_MORE_RESPONSIVE_ENTRIES.md`.
-- Default `SCALP_TP1_RR` is now 0.40; `SCALP_TP1_MAX_RR` remains 1.00.
-- Analysis-only: no broker order execution.
+- The learner only uses resolved TP1/SL shadow outcomes. Ambiguous same-M1-candle SL/TP1 cases are excluded from learning.
+- The learner uses a cautious, interpretable context-bucket model, not a black-box promise of profit. Sparse groups do not trigger filtering.
+- Candidate shadow outcomes use M1 OHLC, so same-candle collisions remain ambiguous and execution costs/slippage are not modeled.
+- The initial strategy's existing rules and geometry are inherited as a starting point; no result is guaranteed. Adaptive filtering may improve, worsen, or leave performance unchanged.
+- Do not compare systems on win rate alone. At 100 resolved active setups, compare net points, realized R, profit factor, drawdown, average reward/loss, trade count, ambiguous outcomes, and the market period covered.
+- This package does not place orders, access a trading account, or connect to MT5.
+
+## Recommended observation plan
+
+Let the service collect its own data. Do not tune thresholds in response to every short losing streak. Keep the learner's JSON model and journals on persistent storage. Once the new system has 100 resolved active paper setups, export both systems' summaries and compare the same period where possible. If the adaptive version underperforms, disable the learner filter with a controlled code/config change rather than modifying the original service.
