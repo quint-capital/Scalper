@@ -105,43 +105,73 @@ def _setup(frames, direction, r):
         if risk <= 0:
             return {'quality':'INVALID STOP GEOMETRY — SKIP','entry':entry,'sl':sl,'risk':risk,'reason':'stop-loss must be above entry for SELL setups'}
 
-    # Scalping target geometry: the official simulated exit is TP1.
-    # Use a modest first target (0.75R) to test quick V75 moves, but do not
-    # place TP1 beyond the nearest confirmed opposing M5 pivot.
-    # If nearby structure leaves less than 0.75R room, skip rather than
-    # pretending the target is realistically reachable.
-    opposing = _nearest_pivot(m5[-30:], direction, entry)
-    max_tp1_rr = float(os.getenv("SCALP_TP1_MAX_RR", "1.00"))
-    if direction == 'BULLISH':
-        structural_dist = (opposing - entry) if opposing is not None else 0
-    else:
-        structural_dist = (entry - opposing) if opposing is not None else 0
+    # Structure-led TP1: target the nearest meaningful opposing objective,
+    # front-run it by a small ATR buffer, and reject geometrically poor setups.
+    # This changes exits only; direction/trigger selection above is untouched.
+    m15 = frames.get('M15', [])
+    opposing_candidates = []
+    pivot_sources = []
+    for candles, label, lookback in ((m5, 'M5', 60), (m15, 'M15', 30)):
+        if len(candles) >= 8:
+            highs, lows = _pivots(candles[-lookback:], 2, 2)
+            levels = highs if direction == 'BULLISH' else lows
+            eligible = [float(v) for _, v in levels
+                        if (v > entry if direction == 'BULLISH' else v < entry)]
+            if eligible:
+                nearest = min(eligible) if direction == 'BULLISH' else max(eligible)
+                opposing_candidates.append((abs(nearest-entry), nearest, label))
+                pivot_sources.append((label, eligible))
 
-    # v3.7: more responsive TP1 geometry. A closer structural target is
-    # acceptable from 0.40R upward; do not reject solely because it misses
-    # the old 0.75R preference. If no confirmed opposing pivot is available,
-    # use a conservative 0.50R TP1 and label it explicitly as ATR fallback.
-    if opposing is None:
-        tp1_dist = 0.50 * risk
-        tp1_basis = '0.50R fallback — no confirmed opposing M5 pivot'
-    elif structural_dist > 0:
-        # In inverse mode, this original TP1 becomes the inverse stop-loss.
-        # Keep the structure-aware target, but do not reject it on an RR threshold.
-        tp1_dist = min(structural_dist, max_tp1_rr * risk)
-        tp1_basis = 'M5 opposing structure (source target; becomes inverse SL)'
+    # A repeated pivot zone can represent clustered liquidity. The closest
+    # confirmed opposing level remains the destination; the buffer avoids
+    # requiring an exact touch of the pivot price.
+    if opposing_candidates:
+        _, opposing, source_tf = min(opposing_candidates, key=lambda z: z[0])
+        target_buffer = max(0.08 * a5, 0.05 * a1)
+        structural_dist = abs(opposing-entry) - target_buffer
+        if structural_dist <= 0:
+            structural_dist = abs(opposing-entry) * 0.5
+        tp1_dist = structural_dist
+        tp1_basis = f'{source_tf} opposing swing/liquidity objective, front-run by ATR buffer'
     else:
-        # If a pivot is not usable, retain a deterministic fallback level.
-        tp1_dist = 0.50 * risk
-        tp1_basis = '0.50R fallback — no usable opposing M5 pivot'
+        # Only when no confirmed opposing swing exists do we use a volatility
+        # fallback. It is explicit in the journal so results can be segmented.
+        tp1_dist = max(0.80 * risk, 1.00 * a5)
+        tp1_basis = 'ATR fallback — no confirmed opposing M5/M15 swing'
 
-    # Only one source target is needed: it will become the inverse stop-loss.
+    # Momentum affects confidence in reachability, not the signal direction.
+    # If both trigger timeframes are opposed, require a closer target rather
+    # than stretching toward a distant swing.
+    m1_read = r.get('M1', {})
+    m5_read = r.get('M5', {})
+    aligned = sum(1 for x in (m1_read, m5_read)
+                  if x.get('momentum') == direction or x.get('displacement') == direction)
+    if aligned == 0:
+        tp1_dist = min(tp1_dist, max(0.65 * risk, 0.75 * a5))
+        tp1_basis += ' | reduced for weak M1/M5 momentum'
+
+    # The target is still dictated by structure; RR is a viability check, not
+    # a formula used to invent a farther TP. Skip only when the objective gives
+    # too little room relative to the structural stop.
+    min_tp1_rr = float(os.getenv('SCALP_TP1_MIN_RR', '0.65'))
+    planned_rr = tp1_dist / risk if risk > 0 else 0
+    if planned_rr < min_tp1_rr:
+        return {
+            'quality':'SCALP TARGET TOO CLOSE — SKIP', 'entry':entry, 'sl':sl,
+            'risk':risk, 'structural_dist':round(tp1_dist, 5),
+            'required_dist':round(min_tp1_rr * risk, 5),
+            'opposing_pivot':opposing if opposing_candidates else None,
+            'reason':f'nearest realistic objective offers only {planned_rr:.2f}R; minimum is {min_tp1_rr:.2f}R',
+            'sl_basis':'M1/M5 swing invalidation + ATR buffer', 'tp1_basis':tp1_basis,
+        }
+
     source_tp1 = entry + tp1_dist if direction == 'BULLISH' else entry - tp1_dist
 
     return {
         'quality':'STRUCTURAL-LOCAL',
         'entry':entry,'sl':sl,'tp1':source_tp1,
-        'risk':risk,'tp1_basis':tp1_basis,
-        'sl_basis':'M1/M5 local invalidation','risk_cap':round(max_risk,5),'risk_mode':'ADAPTIVE_STRONG' if strong else 'STANDARD',
+        'risk':risk,'tp1_basis':tp1_basis, 'planned_rr':round(tp1_dist / risk, 4),
+        'sl_basis':'M1/M5 swing invalidation + ATR buffer','risk_cap':round(max_risk,5),'risk_mode':'ADAPTIVE_STRONG' if strong else 'STANDARD',
     }
 
 
@@ -574,7 +604,7 @@ def analyze(frames):
 
 
 def report(x):
-    lines=['QUINT CAPITAL V75 ADAPTIVE — ONE-CANDLE PAPER TEST','ADAPTIVE EXPERIMENT | SOURCE DIRECTION + SOURCE SL/TP1 GEOMETRY | PAPER ONLY — NO BROKER ORDERS','='*68,
+    lines=['QUINT CAPITAL V75 SELF-LEARNING EXIT MODEL — PAPER TEST','ORIGINAL ENTRY/DIRECTION LOGIC + STRUCTURE-LED SOURCE GEOMETRY | ANALYSIS ONLY — NO BROKER ORDERS','='*68,
            f"STATE: {x['state']}",f"TEST SIGNAL: {x['direction']} (source direction: {x.get('original_direction','UNKNOWN')})",
            f"STRUCTURE SCORE: {x['structure_score']}/100 (NOT A PROBABILITY)",
            f"TRIGGER SCORE: {x['trigger_score']}/100 (NOT A PROBABILITY)",

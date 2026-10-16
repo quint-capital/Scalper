@@ -1,47 +1,50 @@
-# Quint Capital V75 Adaptive — Independent Paper Learning System
+# QUTE V75 Self-Learning Exit Model v1
 
-**Analysis-only. No broker orders. No MT5.** This is a separate experimental service based on the supplied QUTE V75 engine. It does not edit or share the original service's journals by default. Keep the original running unchanged.
+**Analysis-only / paper outcomes only. No broker orders and no trade execution.** This is a separate experiment based on the structure-led QUTE V75 model. The original signal direction, entry trigger and setup qualification logic in `engine.py` are preserved. This version experiments with TP/SL exit geometry only.
 
-## What this version does
+## What it learns
 
-- Starts from the existing entry logic and setup geometry; it does not rewrite the engine's entry, stop-loss, or TP1 formulas.
-- Creates an independent actual-paper journal and a separate **shadow journal** for every eligible setup candidate.
-- The shadow journal tracks outcomes even when the learner filters a candidate, so the model can learn from accepted and rejected candidates instead of only seeing its own accepted trades.
-- Learns online from realized R across multiple context groups: direction, structure-score band, trigger-score band, confirmations, trend alignment, M1/M5 agreement, exhaustion, and M15/M1 location.
-- Passes all candidates through during warm-up. Default warm-up is 30 resolved shadow candidates. After warm-up, it filters a candidate only when at least two sufficiently sampled context buckets show a cautious upper estimate below -0.05R. This is a conservative rule, not a guarantee of better performance.
-- Never changes entry, SL, TP1, direction calculation, or the underlying engine rules automatically. Adaptation is limited to an evidence-based setup acceptance filter.
-- Logs learner decisions and model summaries. The original service is not connected to this model.
-- Emits a milestone when 100 resolved active paper setups have been recorded. Review the comparison only after an adequate sample; this package does not automatically claim it is better.
+For each eligible signal, the model starts nine independent shadow setups using the same entry and direction but different exit profiles:
 
-## Deploy as a separate Railway service
+- Stop-loss distance: 1.00x, 1.15x, or 1.30x the source structural stop distance. Stops are widened beyond the original structural invalidation, never tightened inside it.
+- Take-profit distance: 0.60x, 0.80x, or 1.00x the source structure-led target distance. Targets are never extended beyond the original structural target.
+- Each shadow is tracked against subsequent completed M1 candles using the same stop/target outcome rules. If both target and stop are touched in one M1 candle, that outcome is marked ambiguous and excluded from win/loss learning.
 
-1. Create a **new GitHub repository** for this folder, or a new branch/repository that is deployed as a different Railway service. Do not overwrite the original repository/service.
-2. Upload the contents of this folder to the new repository. `main.py` is the entry point used by the existing deployment setup.
-3. Create/attach a persistent Railway volume mounted at `/app/data` for the new service. Do not point the new service's environment variables at the original service's files.
-4. Set `DERIV_SYMBOL=R_75` if needed. Keep the WebSocket endpoint configuration from the original working package.
-5. Deploy and verify logs for `[DATA] Live stream active`, `[HEARTBEAT]` (where emitted by the existing data client), `[LEARN] Model loaded`, and the shadow/actual journals being written.
+The selected policy is chosen using **only already-closed outcomes**. Until every profile has at least 30 resolved outcomes, the selected model uses the original structure-led exit geometry (`SL1.00_TP1.00`) while collecting shadow evidence. After warm-up, it selects the profile with the best conservative mean-R score. When the same pre-outcome context has at least 12 resolved observations per profile, context results are blended with global results. Context uses only information known at setup time: direction, M1 volatility class, and structure-score bucket.
 
-## Isolated default files
+This is constrained online learning, not unrestricted self-modifying code. It does not rewrite `engine.py`, change entries, or change direction logic. Shadow variants allow exit profiles to be compared on the same entry signals, reducing the risk of comparing different entry samples.
 
-- `/app/data/qute_adaptive_v75_history.json`
-- `/app/data/qute_adaptive_analysis_v1.jsonl`
-- `/app/data/qute_adaptive_setups_v1.json`
-- `/app/data/qute_adaptive_active_v1.json`
-- `/app/data/qute_adaptive_shadow_active_v1.json`
-- `/app/data/qute_adaptive_shadow_history_v1.json`
-- `/app/data/qute_adaptive_model_v1.json`
+## Fresh isolated data files
 
-All can be overridden through environment variables in `config.py`. The filenames are deliberately distinct from the original system's defaults.
+All journals are dedicated to this model and do not reuse the prior structure-led model's filenames:
 
-## Learning safeguards and limitations
+- `/app/data/qute_v75_self_learning_analysis_v1.jsonl`
+- `/app/data/qute_v75_self_learning_setups_v1.json`
+- `/app/data/qute_v75_self_learning_active_v1.json`
+- `/app/data/qute_v75_self_learning_state_v1.json`
+- `/app/data/qute_v75_self_learning_shadow_setups_v1.json`
+- `/app/data/qute_v75_self_learning_shadow_active_v1.json`
 
-- The learner only uses resolved TP1/SL shadow outcomes. Ambiguous same-M1-candle SL/TP1 cases are excluded from learning.
-- The learner uses a cautious, interpretable context-bucket model, not a black-box promise of profit. Sparse groups do not trigger filtering.
-- Candidate shadow outcomes use M1 OHLC, so same-candle collisions remain ambiguous and execution costs/slippage are not modeled.
-- The initial strategy's existing rules and geometry are inherited as a starting point; no result is guaranteed. Adaptive filtering may improve, worsen, or leave performance unchanged.
-- Do not compare systems on win rate alone. At 100 resolved active setups, compare net points, realized R, profit factor, drawdown, average reward/loss, trade count, ambiguous outcomes, and the market period covered.
-- This package does not place orders, access a trading account, or connect to MT5.
+Existing market candle history is retained at `/app/data/v75_history.json` for context. The performance and learning history start fresh. Keep the Railway persistent volume mounted at `/app/data` so the journals and learned state survive redeploys.
 
-## Recommended observation plan
+## Deploy
 
-Let the service collect its own data. Do not tune thresholds in response to every short losing streak. Keep the learner's JSON model and journals on persistent storage. Once the new system has 100 resolved active paper setups, export both systems' summaries and compare the same period where possible. If the adaptive version underperforms, disable the learner filter with a controlled code/config change rather than modifying the original service.
+1. Extract this ZIP and upload the contents of `QUTE-main/` to a **separate GitHub repository or branch** from the original model.
+2. Deploy it as a separate Railway service if you want the original and learning model to run side by side. Mount the persistent volume at `/app/data`.
+3. Ensure the new service is not configured with old `STRUCTURE_LED_*` journal overrides. This model uses the dedicated `SELF_LEARNING_*` variables instead.
+4. Confirm startup logs show the `qute_v75_self_learning_*` paths and `BASELINE_WARMUP`.
+5. Watch `[LEARNER SHADOW]`, `[LEARNER UPDATE]`, and `[LEARNER DECISION]` lines. They report alternative exit outcomes, learning statistics and the selected profile.
+
+## Optional configuration
+
+- `LEARNER_MIN_GLOBAL_RESOLVED=30` — minimum resolved outcomes required for each exit profile before selection.
+- `LEARNER_MIN_CONTEXT_RESOLVED=12` — minimum per-profile outcomes in a context before contextual blending.
+- `LEARNER_COST_POINTS=0` — optional per-trade cost in index-price points used by the learner's score only. Set this only to a defensible estimate for your evaluation; default results are gross of costs.
+- `SELF_LEARNING_ANALYSIS_JOURNAL_FILE`, `SELF_LEARNING_SETUP_JOURNAL_FILE`, `SELF_LEARNING_ACTIVE_SETUPS_FILE`, `SELF_LEARNING_STATE_FILE`, `SELF_LEARNING_SHADOW_SETUPS_FILE`, `SELF_LEARNING_SHADOW_ACTIVE_FILE` — dedicated path overrides if required.
+
+## Important limitations
+
+- No profitability is assumed or guaranteed. The first version learns only as fresh live setups close; it does not retroactively replay all bootstrap candles as historical trades.
+- Results are M1 OHLC paper estimates, not tick-by-tick fills. Same-candle target/stop collisions are ambiguous. Slippage and costs are not automatically known; configure `LEARNER_COST_POINTS` only if you have a grounded estimate.
+- Shadow profiles share the same entry sample, but they are alternative hypothetical exits, not nine independent real trades.
+- Let a meaningful number of setups close and compare the selected model against the fixed structure-led baseline before drawing conclusions.

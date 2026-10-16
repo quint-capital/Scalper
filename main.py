@@ -13,14 +13,20 @@ from config import *
 from data import DerivTicks
 from engine import analyze, report
 from alerts import send_telegram
-from learning import AdaptiveLearner, feature_groups
 from journal import (
     append_analysis, load_setups, save_setups, load_active, save_active,
     make_setup_record, update_setup, summarize_setups, performance_text, _setup_signature,
 )
+from adaptive_learning import (
+    load_state as load_learner_state, save_state as save_learner_state,
+    load_shadow_active, save_shadow_active, load_shadow_history, save_shadow_history,
+    context_key, choose_profile, apply_profile, make_shadow_records,
+    record_closed_outcome, model_report, BASELINE_PROFILE,
+)
 
 def storage_diagnostics():
-    paths = [HISTORY_FILE, ANALYSIS_JOURNAL_FILE, SETUP_JOURNAL_FILE, ACTIVE_SETUPS_FILE]
+    paths = [HISTORY_FILE, ANALYSIS_JOURNAL_FILE, SETUP_JOURNAL_FILE, ACTIVE_SETUPS_FILE,
+             LEARNER_STATE_FILE, SHADOW_SETUPS_FILE, SHADOW_ACTIVE_FILE]
     print(f"[STORAGE] Expected data directory: {DATA_DIR}")
     print(f"[STORAGE] RAILWAY_VOLUME_MOUNT_PATH: {os.getenv('RAILWAY_VOLUME_MOUNT_PATH', 'NOT SET')}")
     for path in paths:
@@ -65,12 +71,12 @@ def _journal_record(x, candle):
         "state": x["state"],
         "market_bias": x["direction"],
         "original_direction": x.get("original_direction", "UNKNOWN"),
-        "strategy": "QUTE_V75_ADAPTIVE",
+        "strategy": "QUTE_V75_SELF_LEARNING_V1",
         "structure_score": x["structure_score"],
         "trigger_score": x["trigger_score"],
         "confidence": x["confidence"],
         "entry_quality": x["entry_quality"],
-        "setup_family": "QUTE_V75_SCALPER",
+        "setup_family": "QUTE_V75_SELF_LEARNING_V1",
         "continuation_score": x.get("continuation_score", 0),
         "transition_score": x.get("transition_score", 0),
         "entry_confirmations": x["confirmation_count"],
@@ -86,31 +92,16 @@ def _journal_record(x, candle):
     }
 
 async def run():
-    print("QUINT CAPITAL V75 ADAPTIVE — INDEPENDENT PAPER LEARNING SYSTEM")
-    print("SAME STARTING STRATEGY | ONLINE CONTEXT LEARNING | SHADOW OUTCOMES | NO EXECUTION")
-    print("REAL V75 TICK STREAM + INDEPENDENT ADAPTIVE PAPER JOURNAL — NO BROKER ORDERS")
+    print("QUTE V75 SELF-LEARNING EXIT MODEL v1 — ANALYSIS ONLY")
+    print("ORIGINAL ENTRY/DIRECTION LOGIC PRESERVED | SHADOW EXIT EVALUATION | NO BROKER ORDERS")
     storage_diagnostics()
     history=load(); print(f"[DATA] M1 history loaded: {len(history)}")
     setups=load_setups(); active=load_active()
-    learner = AdaptiveLearner()
-    def _read_list(path):
-        try:
-            q=Path(path)
-            data=json.loads(q.read_text(encoding="utf-8")) if q.exists() else []
-            return data if isinstance(data,list) else []
-        except Exception:
-            return []
-    def _write_list(path, data, limit=5000):
-        q=Path(path); q.parent.mkdir(parents=True,exist_ok=True)
-        tmp=q.with_suffix(q.suffix+".tmp")
-        tmp.write_text(json.dumps(data[-limit:],separators=(",",":")),encoding="utf-8")
-        tmp.replace(q)
-    learning_active = _read_list(LEARNING_ACTIVE_FILE)
-    learning_history = _read_list(LEARNING_HISTORY_FILE)
-    print(f"[LEARN] Model loaded: {learner.state.get('resolved_candidates',0)} resolved shadow candidates")
-    print(f"[LEARN] Shadow history: {len(learning_history)} | Shadow active: {len(learning_active)}")
+    learner_state=load_learner_state(); shadow_history=load_shadow_history(); shadow_active=load_shadow_active()
     print(f"[JOURNAL] Analysis journal: {ANALYSIS_JOURNAL_FILE}")
-    print(f"[JOURNAL] Setup history: {len(setups)} | Active setups: {len(active)}")
+    print(f"[JOURNAL] Selected-model history: {len(setups)} | Active selected setups: {len(active)}")
+    print(f"[LEARNER] Shadow outcomes: {len(shadow_history)} | Open shadow profiles: {len(shadow_active)} | Baseline={BASELINE_PROFILE}")
+    print(f"[LEARNER] State file: {LEARNER_STATE_FILE} | report={json.dumps(model_report(learner_state), separators=(',', ':'))}")
     last_state=None; last_alert=0; retry_delay=5; last_setup_sig=None; last_alert_setup_sig=None
     # v3.6: one tracked paper setup at a time, and one setup per structural move. A setup cycle
     # is consumed when a trade is created and cannot be reused until the market
@@ -144,28 +135,6 @@ async def run():
                 # so Railway volume preserves the live decision history across deploys.
                 append_analysis(_journal_record(x, current))
 
-                # Update every candidate in the shadow journal, including candidates
-                # that the learner declined. This provides counterfactual feedback.
-                learning_changed = False
-                for candidate in learning_active[:]:
-                    if int(current["ts"]) <= int(candidate.get("created_ts", 0)):
-                        continue
-                    before = candidate.get("status")
-                    update_setup(candidate, current)
-                    if candidate.get("status") != before:
-                        learning_changed = True
-                    if candidate.get("status") == "CLOSED":
-                        if candidate.get("outcome") in ("TP1", "SL"):
-                            if learner.observe(candidate):
-                                print(f"[LEARN][OBSERVED] {candidate['id']} outcome={candidate['outcome']} R={candidate.get('realized_r')}")
-                        learning_history.append(candidate)
-                        learning_active.remove(candidate)
-                        learning_changed = True
-                if learning_changed:
-                    _write_list(LEARNING_ACTIVE_FILE, learning_active)
-                    _write_list(LEARNING_HISTORY_FILE, learning_history, LEARNING_MAX_SHADOW_HISTORY)
-                print(learner.summary())
-
                 # Update all open setups using only candles AFTER their creation.
                 changed=False
                 for s in active[:]:
@@ -181,6 +150,25 @@ async def run():
                 if changed:
                     save_active(active); save_setups(setups)
 
+                # Shadow-execute every exit profile on the same signal; these outcomes train the learner.
+                shadow_changed = False
+                for shadow in shadow_active[:]:
+                    if int(current["ts"]) <= int(shadow.get("created_ts", 0)):
+                        continue
+                    before = shadow.get("status")
+                    update_setup(shadow, current)
+                    if shadow.get("status") != before and shadow.get("status") == "CLOSED":
+                        shadow_history.append(shadow)
+                        shadow_active.remove(shadow)
+                        record_closed_outcome(shadow, learner_state)
+                        shadow_changed = True
+                        print(f"[LEARNER SHADOW] {shadow['profile_id']} -> {shadow.get('outcome')} | R={shadow.get('realized_r')} | context={shadow.get('context_key')}")
+                if shadow_changed:
+                    save_shadow_active(shadow_active)
+                    save_shadow_history(shadow_history)
+                    save_learner_state(learner_state)
+                    print(f"[LEARNER UPDATE] {json.dumps(model_report(learner_state), separators=(',', ':'))}")
+
                 # v3.6: one active tracked paper setup at a time + one setup per structural move.
                 # A changed SL/TP/entry signature inside the same move must NOT
                 # create another trade. The market must first leave SETUP state,
@@ -195,44 +183,30 @@ async def run():
 
                 can_open = (not active) and (not move_cycle_locked)
                 if sig and can_open:
-                    candidate=make_setup_record(x, current)
-                    candidate["id"] = candidate["id"].replace("V75-DOUBLE-REVERSED-", "V75-ADAPTIVE-")
-                    candidate["strategy"] = "QUTE_V75_ADAPTIVE"
-                    candidate["directional_trend"] = x.get("direction")
-                    candidate["structure_score"] = x.get("structure_score")
-                    candidate["trigger_score"] = x.get("trigger_score")
-                    candidate["m1_zone"] = x.get("readings",{}).get("M1",{}).get("zone","UNKNOWN")
-                    candidate["m15_zone"] = x.get("readings",{}).get("M15",{}).get("zone","UNKNOWN")
-                    candidate["learning_features"] = feature_groups(candidate)
-                    candidate["learner_decision_ts"] = int(current["ts"])
-                    accepted, learner_reason = learner.evaluate(candidate)
-                    candidate["learner_accepted"] = bool(accepted)
-                    candidate["learner_decision"] = learner_reason
-                    # Every candidate is shadow-tracked to learn its outcome, whether
-                    # accepted as an active paper setup or filtered from active stats.
-                    shadow = dict(candidate)
-                    shadow["id"] = "SHADOW-" + str(candidate["id"])
-                    learning_active.append(shadow)
-                    _write_list(LEARNING_ACTIVE_FILE, learning_active)
+                    base_setup=make_setup_record(x, current)
+                    ctx=context_key(x)
+                    profile_id, decision=choose_profile(x, learner_state)
+                    new_setup=apply_profile(dict(base_setup), profile_id)
+                    new_setup["context_key"] = ctx
+                    new_setup["learner_mode"] = decision.get("mode")
+                    # Run all exit alternatives on this same entry as shadow setups.
+                    new_shadows=make_shadow_records(base_setup, ctx)
+                    shadow_active.extend(new_shadows)
+                    save_shadow_active(shadow_active)
+                    active.append(new_setup); save_active(active)
                     last_setup_sig=sig
                     move_cycle_locked=True
-                    if accepted:
-                        active.append(candidate); save_active(active)
-                        print(f"[ADAPTIVE SETUP ACCEPTED] {candidate['id']} | DIRECTION={candidate['direction']}")
-                        print(f"[TRADE METRICS] ENTRY={candidate['entry']:.5f} | SL={candidate['sl']:.5f} | TP1={candidate['tp1']:.5f} | RISK={candidate['risk']:.5f} | REWARD={candidate['reward_distance']:.5f} | PLANNED RR={candidate['planned_rr']:.2f}:1")
-                        print(f"[LEARN DECISION] {learner_reason}")
-                        print(f"[JOURNAL] Active setups: {len(active)} | Historical setups: {len(setups)}")
-                    else:
-                        print(f"[ADAPTIVE FILTERED] {candidate['id']} | {learner_reason}")
-                        print("[SHADOW] Candidate remains tracked for outcome learning; it is not included in active setup performance.")
+                    print(f"[QUTE SETUP] {new_setup['id']} | DIRECTION={new_setup['direction']} | MODEL=SELF-LEARNING")
+                    print(f"[LEARNER DECISION] selected={profile_id} | mode={decision.get('mode')} | context={ctx} | evidence={json.dumps(decision, separators=(',', ':'))}")
+                    print(f"[TRADE METRICS] ENTRY={new_setup['entry']:.5f} | SL={new_setup['sl']:.5f} | TP1={new_setup['tp1']:.5f} | RISK={new_setup['risk']:.5f} | REWARD={new_setup['reward_distance']:.5f} | PLANNED RR={new_setup['planned_rr']:.2f}:1")
+                    print(f"[LEARNER SHADOW] Started {len(new_shadows)} alternative exit evaluations for this entry")
+                    print(f"[JOURNAL] Active setups: {len(active)} | Historical setups: {len(setups)} | Shadow active: {len(shadow_active)}")
                 elif sig and active:
                     print('[SETUP BLOCKED] Active trade already exists — no second trade allowed')
                 elif sig and move_cycle_locked:
                     print('[SETUP BLOCKED] Same structural move already traded — waiting for a fresh move')
 
                 summary=summarize_setups(setups + active)
-                if summary.get("terminal", 0) >= 100 and summary.get("terminal", 0) % 10 == 0:
-                    print(f"[MILESTONE] {summary['terminal']} resolved ACTIVE paper setups reached. Save this run's report for the planned baseline comparison.")
                 if changed:
                     print("[JOURNAL] OUTCOME UPDATE")
                     print(performance_text(summary))
@@ -240,9 +214,7 @@ async def run():
                 now=time.time()
                 # v3.6: alerts are still tied to a genuinely fresh setup, never
                 # to repeated signatures from the same structural move.
-                # Do not alert a setup that the adaptive learner filtered. Extreme-volatility
-                # warnings remain alertable independently of setup acceptance.
-                alertable = (x["state"] == "WAIT — EXTREME VOLATILITY") or (x["state"] in ("BUY SETUP", "SELL SETUP") and bool(active))
+                alertable = x["state"] in ("BUY SETUP","SELL SETUP","WAIT — EXTREME VOLATILITY")
                 new_setup_alert = bool(sig and sig != last_alert_setup_sig)
                 state_alert = x["state"] != last_state
                 if alertable and (new_setup_alert or state_alert) and now-last_alert>=ALERT_COOLDOWN_SECONDS:
