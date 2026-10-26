@@ -1,50 +1,52 @@
-# QUTE V75 Self-Learning Exit Model v1
+# V2 Responsive Inverse Experiment — important
 
-**Analysis-only / paper outcomes only. No broker orders and no trade execution.** This is a separate experiment based on the structure-led QUTE V75 model. The original signal direction, entry trigger and setup qualification logic in `engine.py` are preserved. This version experiments with TP/SL exit geometry only.
+This ZIP is the separate `QUTE_V75_IMPROVED_REVERSED_V2_RESPONSIVE` analysis-only experiment. It intentionally reverses source BUY/SELL setup direction. It uses isolated default V2 history/journal paths and does not execute trades. See `CHANGELOG_IMPROVED_REVERSED_V2_RESPONSIVE.md` for the exact gate changes and validation.
 
-## What it learns
+# Quint Capital V75 — Improved Reversed-Signal V1
 
-For each eligible signal, the model starts nine independent shadow setups using the same entry and direction but different exit profiles:
+**Analysis-only / paper tracking. No broker orders, MT5 connection, or execution code.** This is a separate experimental version based on the uploaded reversed-signal package. The original system and its files must remain untouched.
 
-- Stop-loss distance: 1.00x, 1.15x, or 1.30x the source structural stop distance. Stops are widened beyond the original structural invalidation, never tightened inside it.
-- Take-profit distance: 0.60x, 0.80x, or 1.00x the source structure-led target distance. Targets are never extended beyond the original structural target.
-- Each shadow is tracked against subsequent completed M1 candles using the same stop/target outcome rules. If both target and stop are touched in one M1 candle, that outcome is marked ambiguous and excluded from win/loss learning.
+## Direction audit
 
-The selected policy is chosen using **only already-closed outcomes**. Until every profile has at least 30 resolved outcomes, the selected model uses the original structure-led exit geometry (`SL1.00_TP1.00`) while collecting shadow evidence. After warm-up, it selects the profile with the best conservative mean-R score. When the same pre-outcome context has at least 12 resolved observations per profile, context results are blended with global results. Context uses only information known at setup time: direction, M1 volatility class, and structure-score bucket.
+The source first generates a source-direction setup and then reverses the emitted direction (BUY ↔ SELL). The final setup geometry is calculated for the emitted direction; this is not a simple SL/TP swap. The report now states that explicitly. This version preserves that reversed-signal experiment and adds guards around the emitted trade.
 
-This is constrained online learning, not unrestricted self-modifying code. It does not rewrite `engine.py`, change entries, or change direction logic. Shadow variants allow exit profiles to be compared on the same entry signals, reducing the risk of comparing different entry samples.
+## Added protections
 
-## Fresh isolated data files
+1. **Market-regime classification:** labels broad conditions as bullish trend, bearish trend, trend with countertrend pullback, or range/transition/mixed. Range/transition candidates are blocked rather than forced into trades.
+2. **Stronger confirmation:** requires a completed M1 candle in the emitted trade direction, an M1 MSS/BOS/displacement trigger in that direction, and M5 directional support.
+3. **Repeated-entry and loss protection:** one active paper setup at a time and one setup per setup cycle remain in place. After a stop-out, new entries are paused for the configured cooldown; a consecutive-loss streak triggers a longer temporary pause.
+4. **Structure-based SL/TP audit:** preserves swing/ATR stop construction and opposing-swing targets, then rejects wrong-side SL/TP, stops wider than the configured M5-ATR cap, or targets below minimum RR. It does not extend targets just to inflate RR.
+5. **Signal and journal audit:** explicit reversed direction, regime and confirmation diagnostics are journaled. Setup IDs are versioned and each setup stores its source and emitted direction.
 
-All journals are dedicated to this model and do not reuse the prior structure-led model's filenames:
+These are experimental filters, not proven profitability improvements. Strict confirmation can reduce the number of trades; compare net expectancy and drawdown, not win rate alone.
 
-- `/app/data/qute_v75_self_learning_analysis_v1.jsonl`
-- `/app/data/qute_v75_self_learning_setups_v1.json`
-- `/app/data/qute_v75_self_learning_active_v1.json`
-- `/app/data/qute_v75_self_learning_state_v1.json`
-- `/app/data/qute_v75_self_learning_shadow_setups_v1.json`
-- `/app/data/qute_v75_self_learning_shadow_active_v1.json`
+## Separate persistent files
 
-Existing market candle history is retained at `/app/data/v75_history.json` for context. The performance and learning history start fresh. Keep the Railway persistent volume mounted at `/app/data` so the journals and learned state survive redeploys.
+Default files under `/app/data`:
+- `qute_v75_improved_reversed_v2_responsive_history.json`
+- `qute_v75_improved_reversed_v2_responsive_analysis.jsonl`
+- `qute_v75_improved_reversed_v2_responsive_setups.json`
+- `qute_v75_improved_reversed_v2_responsive_active.json`
+- `.quint_v75_improved_reversed_v2_responsive_volume_marker`
 
-## Deploy
+Configurable controls: `POST_LOSS_COOLDOWN_MINUTES` (default 5), `MAX_CONSECUTIVE_LOSSES` (default 2), `SCALP_TP1_MIN_RR` (default 0.75), `MAX_STOP_ATR_M5` (default 2.50). `REV2_HISTORY_FILE`, `REV2_ANALYSIS_JOURNAL_FILE`, `REV2_SETUP_JOURNAL_FILE`, `REV2_ACTIVE_SETUPS_FILE`, and `REV2_STORAGE_MARKER_FILE` can override the paths. Do not point these at the original system's files.
 
-1. Extract this ZIP and upload the contents of `QUTE-main/` to a **separate GitHub repository or branch** from the original model.
-2. Deploy it as a separate Railway service if you want the original and learning model to run side by side. Mount the persistent volume at `/app/data`.
-3. Ensure the new service is not configured with old `STRUCTURE_LED_*` journal overrides. This model uses the dedicated `SELF_LEARNING_*` variables instead.
-4. Confirm startup logs show the `qute_v75_self_learning_*` paths and `BASELINE_WARMUP`.
-5. Watch `[LEARNER SHADOW]`, `[LEARNER UPDATE]`, and `[LEARNER DECISION]` lines. They report alternative exit outcomes, learning statistics and the selected profile.
+## Deploy separately
 
-## Optional configuration
+1. Create a new GitHub repository named `Quint-Capital-V75-Improved-Reversed-V2-Responsive` and upload this folder's contents.
+2. Create a new Railway service from that repository; do not redeploy over the existing service.
+3. Mount a persistent volume at `/app/data`.
+4. Use the same working Deriv symbol/WebSocket configuration.
+5. Verify startup logs identify `IMPROVED REVERSED-SIGNAL V2 RESPONSIVE` and storage paths contain `improved_reversed_v2_responsive`.
 
-- `LEARNER_MIN_GLOBAL_RESOLVED=30` — minimum resolved outcomes required for each exit profile before selection.
-- `LEARNER_MIN_CONTEXT_RESOLVED=12` — minimum per-profile outcomes in a context before contextual blending.
-- `LEARNER_COST_POINTS=0` — optional per-trade cost in index-price points used by the learner's score only. Set this only to a defensible estimate for your evaluation; default results are gross of costs.
-- `SELF_LEARNING_ANALYSIS_JOURNAL_FILE`, `SELF_LEARNING_SETUP_JOURNAL_FILE`, `SELF_LEARNING_ACTIVE_SETUPS_FILE`, `SELF_LEARNING_STATE_FILE`, `SELF_LEARNING_SHADOW_SETUPS_FILE`, `SELF_LEARNING_SHADOW_ACTIVE_FILE` — dedicated path overrides if required.
+## Evaluation
 
-## Important limitations
+Keep the existing service unchanged and compare on the same period. Aim for 50–100 resolved paper setups if practical. Compare net R, win rate, profit factor, maximum drawdown, number of blocked candidates, MFE/MAE, planned RR, and ambiguous same-candle outcomes. Paper outcomes use M1 OHLC; if SL and TP are touched within one candle, outcome remains ambiguous.
 
-- No profitability is assumed or guaranteed. The first version learns only as fresh live setups close; it does not retroactively replay all bootstrap candles as historical trades.
-- Results are M1 OHLC paper estimates, not tick-by-tick fills. Same-candle target/stop collisions are ambiguous. Slippage and costs are not automatically known; configure `LEARNER_COST_POINTS` only if you have a grounded estimate.
-- Shadow profiles share the same entry sample, but they are alternative hypothetical exits, not nine independent real trades.
-- Let a meaningful number of setups close and compare the selected model against the fixed structure-led baseline before drawing conclusions.
+
+## V3.9 strategy repair
+See `CHANGELOG_V3.9_STRATEGY_REPAIR.md`. This build adds reversed-direction confirmation, transition-only countertrend admission, conservative structural stops, a 1.25R maximum TP1 cap, and a fresh isolated V3.9 journal/history namespace. Analysis-only; no broker orders.
+
+
+## V3.9 balanced frequency/quality
+See `CHANGELOG_V3_9_BALANCED_FREQUENCY.md`. This version uses a 2-of-3 reversed-direction confirmation and a balanced multi-timeframe regime path to admit more candidate setups while retaining structural and geometry safeguards. Analysis-only; no broker orders.

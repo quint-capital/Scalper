@@ -5,9 +5,9 @@ from pathlib import Path
 
 # Isolated journal namespace for the structure-led exit model. Do not reuse
 # legacy journal environment variables or files from previous exit logic.
-ANALYSIS_JOURNAL_FILE = os.getenv("SELF_LEARNING_ANALYSIS_JOURNAL_FILE", "/app/data/qute_v75_self_learning_analysis_v1.jsonl")
-SETUP_JOURNAL_FILE = os.getenv("SELF_LEARNING_SETUP_JOURNAL_FILE", "/app/data/qute_v75_self_learning_setups_v1.json")
-ACTIVE_SETUPS_FILE = os.getenv("SELF_LEARNING_ACTIVE_SETUPS_FILE", "/app/data/qute_v75_self_learning_active_v1.json")
+ANALYSIS_JOURNAL_FILE = os.getenv("REV3_ANALYSIS_JOURNAL_FILE", "/app/data/qute_v75_improved_reversed_v3_9_analysis.jsonl")
+SETUP_JOURNAL_FILE = os.getenv("REV3_SETUP_JOURNAL_FILE", "/app/data/qute_v75_improved_reversed_v3_9_setups.json")
+ACTIVE_SETUPS_FILE = os.getenv("REV3_ACTIVE_SETUPS_FILE", "/app/data/qute_v75_improved_reversed_v3_9_active.json")
 MAX_ANALYSIS_JOURNAL_BYTES = int(os.getenv("MAX_ANALYSIS_JOURNAL_BYTES", str(25 * 1024 * 1024)))
 MAX_SETUP_HISTORY = int(os.getenv("MAX_SETUP_HISTORY", "5000"))
 
@@ -88,12 +88,13 @@ def make_setup_record(x, candle):
     s = x.get("setup") or {}
     direction = "BUY" if x.get("state") == "BUY SETUP" else "SELL"
     return {
-        "id": f"V75-SELF-LEARNING-V1-{int(candle['ts'])}-{direction}",
+        "id": f"V75-IMPROVED-REVERSED-V3_9-{int(candle['ts'])}-{direction}-{int(round(float(s.get('entry', 0))*100))}",
         "created_ts": int(candle["ts"]),
         "direction": direction,
         "state_at_creation": x.get("state"),
-        "strategy": "QUTE_V75_SELF_LEARNING_V1",
-        "original_direction": s.get("original_direction", "UNKNOWN"),
+        "strategy": "QUTE_V75_IMPROVED_REVERSED_V2_RESPONSIVE",
+        "original_direction": s.get("source_direction", s.get("original_direction", "UNKNOWN")),
+        "emitted_direction": s.get("emitted_direction", direction),
         "entry": float(s.get("entry")),
         "sl": float(s.get("sl")),
         "tp1": float(s.get("tp1")),
@@ -108,7 +109,12 @@ def make_setup_record(x, candle):
         "trigger_score": x.get("trigger_score"),
         "confidence": x.get("confidence"),
         "entry_confirmations": x.get("confirmation_count", 0),
-        "setup_family": "QUTE_V75_SELF_LEARNING_V1",
+        "entry_timing_filter": x.get("entry_timing_filter", {}),
+        "market_regime": x.get("market_regime", {}),
+        "regime_gate": x.get("regime_gate", {}),
+        "improved_confirmation_gate": x.get("improved_confirmation_gate", {}),
+        "signal_mode": x.get("signal_mode", "QUTE_V75_IMPROVED_REVERSED_V2_RESPONSIVE"),
+        "setup_family": "QUTE_V75_IMPROVED_REVERSED_V2_RESPONSIVE",
         "continuation_score": x.get("continuation_score", 0),
         "exhaustion_score": x.get("exhaustion_score", 0),
         "exhaustion_level": x.get("exhaustion_level", "NORMAL"),

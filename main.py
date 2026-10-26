@@ -17,16 +17,9 @@ from journal import (
     append_analysis, load_setups, save_setups, load_active, save_active,
     make_setup_record, update_setup, summarize_setups, performance_text, _setup_signature,
 )
-from adaptive_learning import (
-    load_state as load_learner_state, save_state as save_learner_state,
-    load_shadow_active, save_shadow_active, load_shadow_history, save_shadow_history,
-    context_key, choose_profile, apply_profile, make_shadow_records,
-    record_closed_outcome, model_report, BASELINE_PROFILE,
-)
 
 def storage_diagnostics():
-    paths = [HISTORY_FILE, ANALYSIS_JOURNAL_FILE, SETUP_JOURNAL_FILE, ACTIVE_SETUPS_FILE,
-             LEARNER_STATE_FILE, SHADOW_SETUPS_FILE, SHADOW_ACTIVE_FILE]
+    paths = [HISTORY_FILE, ANALYSIS_JOURNAL_FILE, SETUP_JOURNAL_FILE, ACTIVE_SETUPS_FILE]
     print(f"[STORAGE] Expected data directory: {DATA_DIR}")
     print(f"[STORAGE] RAILWAY_VOLUME_MOUNT_PATH: {os.getenv('RAILWAY_VOLUME_MOUNT_PATH', 'NOT SET')}")
     for path in paths:
@@ -71,12 +64,13 @@ def _journal_record(x, candle):
         "state": x["state"],
         "market_bias": x["direction"],
         "original_direction": x.get("original_direction", "UNKNOWN"),
-        "strategy": "QUTE_V75_SELF_LEARNING_V1",
+        "strategy": "QUTE_V75_IMPROVED_REVERSED_V2_RESPONSIVE",
         "structure_score": x["structure_score"],
         "trigger_score": x["trigger_score"],
         "confidence": x["confidence"],
         "entry_quality": x["entry_quality"],
-        "setup_family": "QUTE_V75_SELF_LEARNING_V1",
+        "entry_timing_filter": x.get("entry_timing_filter", {}),
+        "setup_family": "QUTE_V75_ENTRY_TIMING_EXPERIMENTAL_V1",
         "continuation_score": x.get("continuation_score", 0),
         "transition_score": x.get("transition_score", 0),
         "entry_confirmations": x["confirmation_count"],
@@ -92,16 +86,14 @@ def _journal_record(x, candle):
     }
 
 async def run():
-    print("QUTE V75 SELF-LEARNING EXIT MODEL v1 — ANALYSIS ONLY")
-    print("ORIGINAL ENTRY/DIRECTION LOGIC PRESERVED | SHADOW EXIT EVALUATION | NO BROKER ORDERS")
+    print("QUTE V75 IMPROVED REVERSED-SIGNAL V3.9 BALANCED QUALITY/FREQUENCY — PAPER MONITOR")
+    print("REVERSED SIGNALS + REGIME/ENTRY/GEOMETRY GUARDS | SEPARATE JOURNAL")
+    print("REAL V75 TICK STREAM + IMPROVED PAPER JOURNAL — ANALYSIS ONLY; NO EXECUTION")
     storage_diagnostics()
     history=load(); print(f"[DATA] M1 history loaded: {len(history)}")
     setups=load_setups(); active=load_active()
-    learner_state=load_learner_state(); shadow_history=load_shadow_history(); shadow_active=load_shadow_active()
     print(f"[JOURNAL] Analysis journal: {ANALYSIS_JOURNAL_FILE}")
-    print(f"[JOURNAL] Selected-model history: {len(setups)} | Active selected setups: {len(active)}")
-    print(f"[LEARNER] Shadow outcomes: {len(shadow_history)} | Open shadow profiles: {len(shadow_active)} | Baseline={BASELINE_PROFILE}")
-    print(f"[LEARNER] State file: {LEARNER_STATE_FILE} | report={json.dumps(model_report(learner_state), separators=(',', ':'))}")
+    print(f"[JOURNAL] Setup history: {len(setups)} | Active setups: {len(active)}")
     last_state=None; last_alert=0; retry_delay=5; last_setup_sig=None; last_alert_setup_sig=None
     # v3.6: one tracked paper setup at a time, and one setup per structural move. A setup cycle
     # is consumed when a trade is created and cannot be reused until the market
@@ -127,7 +119,26 @@ async def run():
                     current["high"]=max(current["high"],p); current["low"]=min(current["low"],p); current["close"]=p; current["volume"]+=1; continue
 
                 history.append(current); history=history[-MAX_M1_HISTORY:]; save(history)
-                x=analyze(frames_from(history)); print(report(x))
+                x=analyze(frames_from(history))
+                # Post-loss cooldown and consecutive-loss brake. These controls
+                # affect paper setup admission only; no broker action exists.
+                recent_closed = sorted([z for z in setups if z.get("status") == "CLOSED" and z.get("outcome") in ("SL", "TP1")], key=lambda z: int(z.get("closed_ts") or 0))
+                cooldown = REV3_POST_LOSS_COOLDOWN_MINUTES * 60
+                last_closed = recent_closed[-1] if recent_closed else None
+                if x.get("state") in ("BUY SETUP", "SELL SETUP") and last_closed and last_closed.get("outcome") == "SL" and int(current["ts"]) - int(last_closed.get("closed_ts") or 0) < cooldown:
+                    x["state"] = f"WAIT — POST-LOSS COOLDOWN — {REV3_POST_LOSS_COOLDOWN_MINUTES}m"
+                    x["setup"] = None
+                consecutive_losses = 0
+                for z in reversed(recent_closed):
+                    if z.get("outcome") == "SL": consecutive_losses += 1
+                    else: break
+                loss_streak_cooldown = max(cooldown, 15 * 60)
+                if (x.get("state") in ("BUY SETUP", "SELL SETUP") and
+                    consecutive_losses >= REV3_MAX_CONSECUTIVE_LOSSES and last_closed and
+                    int(current["ts"]) - int(last_closed.get("closed_ts") or 0) < loss_streak_cooldown):
+                    x["state"] = f"WAIT — LOSS STREAK BRAKE — {consecutive_losses} consecutive losses; cooldown active"
+                    x["setup"] = None
+                print(report(x))
                 print(performance_text(summarize_setups(setups + active)))
                 print("-"*60)
 
@@ -146,28 +157,9 @@ async def run():
                         changed=True
                     if s.get("status") == "CLOSED":
                         setups.append(s); active.remove(s); changed=True
-                        print(f"[QUTE OUTCOME] {s['id']} -> {s['outcome']} | PLANNED RR={s.get('planned_rr') if s.get('planned_rr') is not None else 'N/A'} | REALIZED R={s.get('realized_r', 'N/A')} | MFE={s['max_favorable']:.2f}R | MAE={s['max_adverse']:.2f}R | BARS={s.get('bars_observed', 0)}")
+                        print(f"[ENTRY-TIMING OUTCOME] {s['id']} -> {s['outcome']} | PLANNED RR={s.get('planned_rr') if s.get('planned_rr') is not None else 'N/A'} | REALIZED R={s.get('realized_r', 'N/A')} | MFE={s['max_favorable']:.2f}R | MAE={s['max_adverse']:.2f}R | BARS={s.get('bars_observed', 0)}")
                 if changed:
                     save_active(active); save_setups(setups)
-
-                # Shadow-execute every exit profile on the same signal; these outcomes train the learner.
-                shadow_changed = False
-                for shadow in shadow_active[:]:
-                    if int(current["ts"]) <= int(shadow.get("created_ts", 0)):
-                        continue
-                    before = shadow.get("status")
-                    update_setup(shadow, current)
-                    if shadow.get("status") != before and shadow.get("status") == "CLOSED":
-                        shadow_history.append(shadow)
-                        shadow_active.remove(shadow)
-                        record_closed_outcome(shadow, learner_state)
-                        shadow_changed = True
-                        print(f"[LEARNER SHADOW] {shadow['profile_id']} -> {shadow.get('outcome')} | R={shadow.get('realized_r')} | context={shadow.get('context_key')}")
-                if shadow_changed:
-                    save_shadow_active(shadow_active)
-                    save_shadow_history(shadow_history)
-                    save_learner_state(learner_state)
-                    print(f"[LEARNER UPDATE] {json.dumps(model_report(learner_state), separators=(',', ':'))}")
 
                 # v3.6: one active tracked paper setup at a time + one setup per structural move.
                 # A changed SL/TP/entry signature inside the same move must NOT
@@ -183,24 +175,13 @@ async def run():
 
                 can_open = (not active) and (not move_cycle_locked)
                 if sig and can_open:
-                    base_setup=make_setup_record(x, current)
-                    ctx=context_key(x)
-                    profile_id, decision=choose_profile(x, learner_state)
-                    new_setup=apply_profile(dict(base_setup), profile_id)
-                    new_setup["context_key"] = ctx
-                    new_setup["learner_mode"] = decision.get("mode")
-                    # Run all exit alternatives on this same entry as shadow setups.
-                    new_shadows=make_shadow_records(base_setup, ctx)
-                    shadow_active.extend(new_shadows)
-                    save_shadow_active(shadow_active)
+                    new_setup=make_setup_record(x, current)
                     active.append(new_setup); save_active(active)
                     last_setup_sig=sig
                     move_cycle_locked=True
-                    print(f"[QUTE SETUP] {new_setup['id']} | DIRECTION={new_setup['direction']} | MODEL=SELF-LEARNING")
-                    print(f"[LEARNER DECISION] selected={profile_id} | mode={decision.get('mode')} | context={ctx} | evidence={json.dumps(decision, separators=(',', ':'))}")
+                    print(f"[QUTE SETUP] {new_setup['id']} | DIRECTION={new_setup['direction']} | IMPROVED REVERSED-SIGNAL V2 RESPONSIVE")
                     print(f"[TRADE METRICS] ENTRY={new_setup['entry']:.5f} | SL={new_setup['sl']:.5f} | TP1={new_setup['tp1']:.5f} | RISK={new_setup['risk']:.5f} | REWARD={new_setup['reward_distance']:.5f} | PLANNED RR={new_setup['planned_rr']:.2f}:1")
-                    print(f"[LEARNER SHADOW] Started {len(new_shadows)} alternative exit evaluations for this entry")
-                    print(f"[JOURNAL] Active setups: {len(active)} | Historical setups: {len(setups)} | Shadow active: {len(shadow_active)}")
+                    print(f"[JOURNAL] Active setups: {len(active)} | Historical setups: {len(setups)}")
                 elif sig and active:
                     print('[SETUP BLOCKED] Active trade already exists — no second trade allowed')
                 elif sig and move_cycle_locked:

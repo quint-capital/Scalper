@@ -1,0 +1,1 @@
+Added a historical tick backtest utility to download recent Deriv tick history, replay the included V3.9 engine, resolve simulated SL/TP exits against ticks, and export raw data, trade outcomes, and summary metrics. Analysis-only; no broker orders.
