@@ -1,7 +1,7 @@
 import os
 
 DERIV_SYMBOL = os.getenv("DERIV_SYMBOL", "R_75").strip()
-HISTORY_FILE = os.getenv("REV3_HISTORY_FILE", "/app/data/qute_v75_reversed_v3_12_live_history.json")
+HISTORY_FILE = os.getenv("HISTORY_FILE", "/app/data/v75_history.json")
 MAX_M1_HISTORY = int(os.getenv("MAX_M1_HISTORY", "30000"))
 ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "60"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -14,27 +14,18 @@ WS_URLS = [
     "wss://ws.binaryws.com/websockets/v3",
 ]
 
-# Bootstrap retains the required M1 history to build M15/M5/M1 context.
+# Deep bootstrap: enough M1 data to create meaningful H4/H1/M30/M15/M5 context.
 HISTORY_BOOTSTRAP_CANDLES = int(os.getenv("HISTORY_BOOTSTRAP_CANDLES", "10000"))
 HISTORY_BATCH_SIZE = int(os.getenv("HISTORY_BATCH_SIZE", "1000"))
 
 # Persistent analysis/outcome journal (stored on the Railway volume).
-# Dedicated files for the new structure-led exit model. Deliberately do NOT
-# read the legacy ANALYSIS_JOURNAL_FILE / SETUP_JOURNAL_FILE / ACTIVE_SETUPS_FILE
-# variables: those may point to the old journal and would mix model results.
-ANALYSIS_JOURNAL_FILE = os.getenv("REV3_ANALYSIS_JOURNAL_FILE", "/app/data/qute_v75_reversed_v3_12_live_analysis.jsonl")
-SETUP_JOURNAL_FILE = os.getenv("REV3_SETUP_JOURNAL_FILE", "/app/data/qute_v75_reversed_v3_12_live_setups.json")
-ACTIVE_SETUPS_FILE = os.getenv("REV3_ACTIVE_SETUPS_FILE", "/app/data/qute_v75_reversed_v3_12_live_active.json")
+ANALYSIS_JOURNAL_FILE = os.getenv("ANALYSIS_JOURNAL_FILE", "/app/data/v75_reverse_current_v3_analysis.jsonl")
+SETUP_JOURNAL_FILE = os.getenv("SETUP_JOURNAL_FILE", "/app/data/v75_reverse_current_v3_setups.json")
+ACTIVE_SETUPS_FILE = os.getenv("ACTIVE_SETUPS_FILE", "/app/data/v75_reverse_current_v3_active.json")
 MAX_ANALYSIS_JOURNAL_BYTES = int(os.getenv("MAX_ANALYSIS_JOURNAL_BYTES", str(25 * 1024 * 1024)))
 MAX_SETUP_HISTORY = int(os.getenv("MAX_SETUP_HISTORY", "5000"))
 
 # Runtime storage diagnostics. Railway must mount its persistent Volume at /app/data
 # (or explicitly override the *_FILE variables above).
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "/app/data").strip() or "/app/data"
-STORAGE_MARKER_FILE = os.getenv("REV3_STORAGE_MARKER_FILE", "/app/data/.quint_v75_reversed_v3_12_live_volume_marker")
-
-# Improved reversed-signal experiment controls (paper tracking only).
-REV3_POST_LOSS_COOLDOWN_MINUTES = int(os.getenv("REV3_POST_LOSS_COOLDOWN_MINUTES", "5"))
-REV3_MAX_CONSECUTIVE_LOSSES = int(os.getenv("REV3_MAX_CONSECUTIVE_LOSSES", "2"))
-REV3_SCALP_TP1_MIN_RR = float(os.getenv("REV3_SCALP_TP1_MIN_RR", "0.65"))
-REV3_MAX_STOP_ATR_M5 = float(os.getenv("REV3_MAX_STOP_ATR_M5", "2.50"))
+STORAGE_MARKER_FILE = os.getenv("STORAGE_MARKER_FILE", "/app/data/.quint_v75_volume_marker")

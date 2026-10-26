@@ -1,57 +1,53 @@
-# V2 Responsive Inverse Experiment — important
+# Quint Capital V75 Double-Reversed Baseline Paper Monitor
 
-This ZIP is the separate `QUTE_V75_IMPROVED_REVERSED_V2_RESPONSIVE` analysis-only experiment. It intentionally reverses source BUY/SELL setup direction. It uses isolated default V2 history/journal paths and does not execute trades. See `CHANGELOG_IMPROVED_REVERSED_V2_RESPONSIVE.md` for the exact gate changes and validation.
+**Analysis-only. No broker orders.** This paper-only experiment reverses the previously uploaded source transformation a second time. Therefore it restores the source BUY/SELL direction and source SL/TP1 geometry. It is a baseline comparison, not a new independent reversal strategy. TP2 and TP3 are removed; TP1 is the only target.
 
-# Quint Capital V75 — Improved Reversed-Signal V1
+## Scalping design
+- M1 is the entry/monitoring timeframe; M5 and M15 provide short-term context. Higher timeframes remain available as background filters.
+- Source geometry uses the original M1/M5 structural stop and original TP1; these two levels are swapped for the source setup.
+- The source setup has exactly one target, TP1. No TP2/TP3 levels or RR target gates are used.
+- Continuation entries have a separate M1 displacement/BOS/MSS confirmation path. Extension, exhaustion, adverse microstructure and stop-risk protections remain active.
+- One active setup at a time and one setup per structural move.
+- Live tick feed is aggregated into M1 candles; setups are evaluated using completed candles.
+- Results and analysis use fresh, versioned `v75_double_reversed_fresh_*_v1` journal files under `/app/data`, so prior outcomes are not loaded. Existing market-history file is retained.
 
-**Analysis-only / paper tracking. No broker orders, MT5 connection, or execution code.** This is a separate experimental version based on the uploaded reversed-signal package. The original system and its files must remain untouched.
+## Deploy
+1. Upload the files in this folder to your GitHub repo.
+2. In Railway, mount the existing persistent volume at `/app/data`.
+3. Set `DERIV_SYMBOL=R_75` if needed.
+4. Keep the connection configuration from the supplied working monitor: it tries `wss://api.derivws.com/trading/v1/options/ws/public` first, then `wss://ws.binaryws.com/websockets/v3`. Override the first URL with `DERIV_WS_URL` only if you have a known working endpoint.
+5. Default bootstrap is 10,000 M1 candles. Override with `HISTORY_BOOTSTRAP_CANDLES`.
+6. Deploy and inspect logs for a successful WebSocket connection, historical candles and `[HEARTBEAT] Live ticks flowing`.
 
-## Direction audit
-
-The source first generates a source-direction setup and then reverses the emitted direction (BUY ↔ SELL). The final setup geometry is calculated for the emitted direction; this is not a simple SL/TP swap. The report now states that explicitly. This version preserves that reversed-signal experiment and adds guards around the emitted trade.
-
-## Added protections
-
-1. **Market-regime classification:** labels broad conditions as bullish trend, bearish trend, trend with countertrend pullback, or range/transition/mixed. Range/transition candidates are blocked rather than forced into trades.
-2. **Stronger confirmation:** requires a completed M1 candle in the emitted trade direction, an M1 MSS/BOS/displacement trigger in that direction, and M5 directional support.
-3. **Repeated-entry and loss protection:** one active paper setup at a time and one setup per setup cycle remain in place. After a stop-out, new entries are paused for the configured cooldown; a consecutive-loss streak triggers a longer temporary pause.
-4. **Structure-based SL/TP audit:** preserves swing/ATR stop construction and opposing-swing targets, then rejects wrong-side SL/TP, stops wider than the configured M5-ATR cap, or targets below minimum RR. It does not extend targets just to inflate RR.
-5. **Signal and journal audit:** explicit reversed direction, regime and confirmation diagnostics are journaled. Setup IDs are versioned and each setup stores its source and emitted direction.
-
-These are experimental filters, not proven profitability improvements. Strict confirmation can reduce the number of trades; compare net expectancy and drawdown, not win rate alone.
-
-## Separate persistent files
-
-Default files under `/app/data`:
-- `qute_v75_improved_reversed_v2_responsive_history.json`
-- `qute_v75_improved_reversed_v2_responsive_analysis.jsonl`
-- `qute_v75_improved_reversed_v2_responsive_setups.json`
-- `qute_v75_improved_reversed_v2_responsive_active.json`
-- `.quint_v75_improved_reversed_v2_responsive_volume_marker`
-
-Configurable controls: `POST_LOSS_COOLDOWN_MINUTES` (default 5), `MAX_CONSECUTIVE_LOSSES` (default 2), `SCALP_TP1_MIN_RR` (default 0.75), `MAX_STOP_ATR_M5` (default 2.50). `REV2_HISTORY_FILE`, `REV2_ANALYSIS_JOURNAL_FILE`, `REV2_SETUP_JOURNAL_FILE`, `REV2_ACTIVE_SETUPS_FILE`, and `REV2_STORAGE_MARKER_FILE` can override the paths. Do not point these at the original system's files.
-
-## Deploy separately
-
-1. Create a new GitHub repository named `Quint-Capital-V75-Improved-Reversed-V2-Responsive` and upload this folder's contents.
-2. Create a new Railway service from that repository; do not redeploy over the existing service.
-3. Mount a persistent volume at `/app/data`.
-4. Use the same working Deriv symbol/WebSocket configuration.
-5. Verify startup logs identify `IMPROVED REVERSED-SIGNAL V2 RESPONSIVE` and storage paths contain `improved_reversed_v2_responsive`.
-
-## Evaluation
-
-Keep the existing service unchanged and compare on the same period. Aim for 50–100 resolved paper setups if practical. Compare net R, win rate, profit factor, maximum drawdown, number of blocked candidates, MFE/MAE, planned RR, and ambiguous same-candle outcomes. Paper outcomes use M1 OHLC; if SL and TP are touched within one candle, outcome remains ambiguous.
+## Monitoring caveats
+- HTTP 520 means the server/gateway rejected or failed the handshake; changing the URL is a test, not a guarantee.
+- No live connection means no valid signals or performance observations.
+- Simulated OHLC outcomes can be ambiguous when stop and target are touched in the same M1 candle. Ambiguous cases are not counted as wins/losses.
+- No strategy is presumed profitable. Monitor enough completed setups and review results before considering changes.
+- The source TP1 geometry still uses `SCALP_TP1_MAX_RR` as an upper cap; the source result does not optimize or filter on reward-to-risk.
 
 
-## V3.9 strategy repair
-See `CHANGELOG_V3.9_STRATEGY_REPAIR.md`. This build adds reversed-direction confirmation, transition-only countertrend admission, conservative structural stops, a 1.25R maximum TP1 cap, and a fresh isolated V3.9 journal/history namespace. Analysis-only; no broker orders.
+## If Railway logs show HTTP 520 on the WebSocket handshake
+
+- Confirm `DERIV_APP_ID` is your own registered Deriv app ID, then redeploy.
+- Keep the default official endpoint first; do not assume switching to another legacy hostname will fix an HTTP 520.
+- If a registered ID still returns HTTP 520, test the same endpoint from a different network/runtime and check Deriv service status. HTTP 520 is returned during the handshake, before this monitor sends a market-data request, so it is not caused by the scalping signal rules.
+- Confirm the Railway Volume is attached to this exact service with mount path `/app/data`. A correctly attached volume should provide `RAILWAY_VOLUME_MOUNT_PATH` at runtime. The marker file by itself does not prove persistence.
 
 
-## V3.9 balanced frequency/quality
-See `CHANGELOG_V3_9_BALANCED_FREQUENCY.md`. This version uses a 2-of-3 reversed-direction confirmation and a balanced multi-timeframe regime path to admit more candidate setups while retaining structural and geometry safeguards. Analysis-only; no broker orders.
+## v1.3 direction-aware entry experiment
+- Evaluates bullish and bearish structural transitions independently; a single bearish clue no longer forces the transition direction.
+- Before a setup can be accepted, M1 must show at least two counter-direction candles in the prior five candles, followed by a close through the recent three-candle range in the proposed direction.
+- The entry gate status is included in the analysis output as `entry_gate` for diagnostics.
+- Source stop/target geometry is transformed by the source layer; the source journal tracks only SL and TP1.
+- This is an experimental filter, not a claim of improved profitability. Compare a meaningful sample of completed setups against the previous version.
+
+## v3.7 more responsive entry experiment
+- See `CHANGELOG_V3_7_MORE_RESPONSIVE_ENTRIES.md`.
+- The source setup does not use an RR acceptance threshold. The source TP1 distance still has the original maximum cap.
+- Analysis-only: no broker order execution.
 
 
-## V3.10 timeframe focus
+## Fresh log set
 
-This build focuses exclusively on M15 (context), M5 (setup confirmation), and M1 (entry trigger). H4/H1/M30 are not used as vetoes. Historical tick backtest uses the same three candle frames. Analysis-only: no broker orders. See `CHANGELOG_V3_10_M15_M5_M1_FOCUS.md`.
+This package uses a new set of analysis, setup, and active-setup journal filenames. Historical market candles are preserved, but performance counters start fresh. See `CHANGELOG_FRESH_LOGS_V1.md`.

@@ -54,7 +54,7 @@ def save(c):
     p=Path(HISTORY_FILE); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps(c[-MAX_M1_HISTORY:],separators=(",",":")))
 
 def frames_from(history):
-    return {"M1":history,"M5":aggregate(history,5),"M15":aggregate(history,15)}
+    return {"M1":history,"M5":aggregate(history,5),"M15":aggregate(history,15),"M30":aggregate(history,30),"H1":aggregate(history,60),"H4":aggregate(history,240)}
 
 def _journal_record(x, candle):
     r=x["readings"]
@@ -64,13 +64,12 @@ def _journal_record(x, candle):
         "state": x["state"],
         "market_bias": x["direction"],
         "original_direction": x.get("original_direction", "UNKNOWN"),
-        "strategy": "QUTE_V75_IMPROVED_REVERSED_V2_RESPONSIVE",
+        "signal_mode": "DOUBLE_REVERSED_BASELINE",
         "structure_score": x["structure_score"],
         "trigger_score": x["trigger_score"],
         "confidence": x["confidence"],
         "entry_quality": x["entry_quality"],
-        "entry_timing_filter": x.get("entry_timing_filter", {}),
-        "setup_family": "QUTE_V75_ENTRY_TIMING_EXPERIMENTAL_V1",
+        "setup_type": x.get("setup_type", "NONE"),
         "continuation_score": x.get("continuation_score", 0),
         "transition_score": x.get("transition_score", 0),
         "entry_confirmations": x["confirmation_count"],
@@ -82,13 +81,13 @@ def _journal_record(x, candle):
             "mss": r[t]["mss"], "displacement": r[t]["displacement"], "fvg": r[t]["fvg"],
             "liquidity": r[t]["liquidity"], "zone": r[t]["zone"],
             "extension": r[t]["extension"], "exhaustion": r[t]["exhaustion"], "volatility": r[t]["volatility"], "count": r[t]["count"]
-        } for t in ("M15","M5","M1")}
+        } for t in ("H4","H1","M30","M15","M5","M1")}
     }
 
 async def run():
-    print("QUINT CAPITAL V75 REVERSED V3.12 — CONTINUOUS LIVE PAPER MONITOR")
-    print("M15 CONTEXT + M5 SETUP + M1 TRIGGER | FRESH V3.12 JOURNAL | AUTO PAPER TRADES")
-    print("LIVE DERIV V75 TICKS + CONTINUOUS SIMULATED TRADES — NO REAL ORDERS")
+    print("QUINT CAPITAL V75 REVERSE-OF-CURRENT V3 PAPER MONITOR — ONE-CANDLE PAPER TEST")
+    print("INVERSE STRATEGY — BUY↔SELL | CURRENT TP1↔SL SWAPPED EXACTLY")
+    print("PAPER-ONLY EXPERIMENT | NET PROFIT/LOSS IN INDEX POINTS | NO BROKER ORDERS")
     storage_diagnostics()
     history=load(); print(f"[DATA] M1 history loaded: {len(history)}")
     setups=load_setups(); active=load_active()
@@ -119,26 +118,7 @@ async def run():
                     current["high"]=max(current["high"],p); current["low"]=min(current["low"],p); current["close"]=p; current["volume"]+=1; continue
 
                 history.append(current); history=history[-MAX_M1_HISTORY:]; save(history)
-                x=analyze(frames_from(history))
-                # Post-loss cooldown and consecutive-loss brake. These controls
-                # affect paper setup admission only; no broker action exists.
-                recent_closed = sorted([z for z in setups if z.get("status") == "CLOSED" and z.get("outcome") in ("SL", "TP1")], key=lambda z: int(z.get("closed_ts") or 0))
-                cooldown = REV3_POST_LOSS_COOLDOWN_MINUTES * 60
-                last_closed = recent_closed[-1] if recent_closed else None
-                if x.get("state") in ("BUY SETUP", "SELL SETUP") and last_closed and last_closed.get("outcome") == "SL" and int(current["ts"]) - int(last_closed.get("closed_ts") or 0) < cooldown:
-                    x["state"] = f"WAIT — POST-LOSS COOLDOWN — {REV3_POST_LOSS_COOLDOWN_MINUTES}m"
-                    x["setup"] = None
-                consecutive_losses = 0
-                for z in reversed(recent_closed):
-                    if z.get("outcome") == "SL": consecutive_losses += 1
-                    else: break
-                loss_streak_cooldown = max(cooldown, 15 * 60)
-                if (x.get("state") in ("BUY SETUP", "SELL SETUP") and
-                    consecutive_losses >= REV3_MAX_CONSECUTIVE_LOSSES and last_closed and
-                    int(current["ts"]) - int(last_closed.get("closed_ts") or 0) < loss_streak_cooldown):
-                    x["state"] = f"WAIT — LOSS STREAK BRAKE — {consecutive_losses} consecutive losses; cooldown active"
-                    x["setup"] = None
-                print(report(x))
+                x=analyze(frames_from(history)); print(report(x))
                 print(performance_text(summarize_setups(setups + active)))
                 print("-"*60)
 
@@ -157,7 +137,11 @@ async def run():
                         changed=True
                     if s.get("status") == "CLOSED":
                         setups.append(s); active.remove(s); changed=True
-                        print(f"[ENTRY-TIMING OUTCOME] {s['id']} -> {s['outcome']} | PLANNED RR={s.get('planned_rr') if s.get('planned_rr') is not None else 'N/A'} | REALIZED R={s.get('realized_r', 'N/A')} | MFE={s['max_favorable']:.2f}R | MAE={s['max_adverse']:.2f}R | BARS={s.get('bars_observed', 0)}")
+                        rp = s.get("realized_points")
+                    if s.get("status") == "CLOSED":
+                        rp = s.get("realized_points")
+                        rp_text = "AMBIGUOUS — points excluded" if rp is None else f"NET={float(rp):+.2f} points | R={float(s.get('realized_r') or 0):+.2f}R"
+                        print(f"[OUTCOME] {s['id']} -> {s['outcome']} | {rp_text} | MFE={s['max_favorable']:.2f}R MAE={s['max_adverse']:.2f}R")
                 if changed:
                     save_active(active); save_setups(setups)
 
@@ -179,8 +163,10 @@ async def run():
                     active.append(new_setup); save_active(active)
                     last_setup_sig=sig
                     move_cycle_locked=True
-                    print(f"[QUTE SETUP] {new_setup['id']} | DIRECTION={new_setup['direction']} | IMPROVED REVERSED-SIGNAL V2 RESPONSIVE")
-                    print(f"[TRADE METRICS] ENTRY={new_setup['entry']:.5f} | SL={new_setup['sl']:.5f} | TP1={new_setup['tp1']:.5f} | RISK={new_setup['risk']:.5f} | REWARD={new_setup['reward_distance']:.5f} | PLANNED RR={new_setup['planned_rr']:.2f}:1")
+                    print(f"[JOURNAL] New {new_setup['direction']} setup captured: {new_setup['id']}")
+                    print(f"[TRADE FOUND] SOURCE {new_setup['source_direction']} -> INVERSE {new_setup['direction']} — ONE TRADE ONLY FOR THIS MOVE")
+                    rr_text = "N/A" if new_setup["planned_rr"] is None else f"1:{new_setup['planned_rr']:.2f}"
+                    print(f"[TRADE PARAMETERS] ENTRY={new_setup['entry']:.5f} | INVERSE SL=SOURCE TP1 {new_setup['sl']:.5f} | INVERSE TP=SOURCE SL {new_setup['tp1']:.5f} | RISK={new_setup['risk']:.5f} points | REWARD={new_setup['planned_reward_points']:.5f} points | RR={rr_text} | GEOMETRY={new_setup['geometry_check']}")
                     print(f"[JOURNAL] Active setups: {len(active)} | Historical setups: {len(setups)}")
                 elif sig and active:
                     print('[SETUP BLOCKED] Active trade already exists — no second trade allowed')

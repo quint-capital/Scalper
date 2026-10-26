@@ -1,9 +1,8 @@
 import os
 from structure import summarize, atr, _pivots
 
-# V3.10 lower-timeframe-only model: H4/H1/M30 are not inputs or vetoes.
-WEIGHTS={'M15':30,'M5':25,'M1':20}
-MIN={'M15':50,'M5':100,'M1':200}
+WEIGHTS={'H4':28,'H1':23,'M30':17,'M15':15,'M5':10,'M1':7}
+MIN={'H4':20,'H1':30,'M30':40,'M15':50,'M5':100,'M1':200}
 
 
 def _directional_evidence(r, direction):
@@ -13,7 +12,7 @@ def _directional_evidence(r, direction):
         if tr==direction: score += w
         elif tr not in ('NEUTRAL','INSUFFICIENT') and tr!=direction:
             conflicts.append(tf+' trend conflict')
-    for tf in ('M15','M5','M1'):
+    for tf in ('H1','M30','M15','M5','M1'):
         x=r[tf]
         if x['momentum']==direction: score += 2; reasons.append(tf+' momentum')
         if x['displacement']==direction: score += 4; reasons.append(tf+' displacement')
@@ -25,8 +24,8 @@ def _directional_evidence(r, direction):
         elif x['liquidity']==opposite: score -= 8; conflicts.append(tf+' adverse liquidity sweep')
         if x['fvg']==direction: score += 2; reasons.append(tf+' FVG')
     aligned=sum(1 for tf in WEIGHTS if r[tf]['trend']==direction)
-    if aligned>=2: score += 4
-    if aligned==3: score += 2
+    if aligned>=5: score += 4
+    if aligned==6: score += 2
     return score,reasons,conflicts
 
 
@@ -72,7 +71,7 @@ def _setup(frames, direction, r):
         m5_levels = [v for _, v in l5 if v < entry]
         m1_stop = (max(m1_levels) - 0.20 * a1) if m1_levels else (min(z['low'] for z in m1[-8:]) - 0.20 * a1)
         m5_stop = (max(m5_levels) - 0.15 * a5) if m5_levels else (min(z['low'] for z in m5[-6:]) - 0.15 * a5)
-        sl = min(m1_stop, m5_stop)  # conservative: stop below both structural invalidation candidates
+        sl = max(m1_stop, m5_stop)
         min_risk = max(0.75 * a1, 0.20 * a5)
         # Risk-width rejection is disabled: preserve the structural stop even
         # when it is wider than the former adaptive cap. The cap is retained
@@ -92,7 +91,7 @@ def _setup(frames, direction, r):
         m5_levels = [v for _, v in h5 if v > entry]
         m1_stop = (min(m1_levels) + 0.20 * a1) if m1_levels else (max(z['high'] for z in m1[-8:]) + 0.20 * a1)
         m5_stop = (min(m5_levels) + 0.15 * a5) if m5_levels else (max(z['high'] for z in m5[-6:]) + 0.15 * a5)
-        sl = max(m1_stop, m5_stop)  # conservative: stop above both structural invalidation candidates
+        sl = min(m1_stop, m5_stop)
         min_risk = max(0.75 * a1, 0.20 * a5)
         # Risk-width rejection is disabled for SELL setups as well.
         strength = max(float(r.get('structure_score', 0)), float(r.get('trigger_score', 0)),
@@ -106,129 +105,126 @@ def _setup(frames, direction, r):
         if risk <= 0:
             return {'quality':'INVALID STOP GEOMETRY — SKIP','entry':entry,'sl':sl,'risk':risk,'reason':'stop-loss must be above entry for SELL setups'}
 
-    # Structure-led TP1: target the nearest meaningful opposing objective,
-    # front-run it by a small ATR buffer, and reject geometrically poor setups.
-    # This changes exits only; direction/trigger selection above is untouched.
-    m15 = frames.get('M15', [])
-    opposing_candidates = []
-    pivot_sources = []
-    for candles, label, lookback in ((m5, 'M5', 60), (m15, 'M15', 30)):
-        if len(candles) >= 8:
-            highs, lows = _pivots(candles[-lookback:], 2, 2)
-            levels = highs if direction == 'BULLISH' else lows
-            eligible = [float(v) for _, v in levels
-                        if (v > entry if direction == 'BULLISH' else v < entry)]
-            if eligible:
-                nearest = min(eligible) if direction == 'BULLISH' else max(eligible)
-                opposing_candidates.append((abs(nearest-entry), nearest, label))
-                pivot_sources.append((label, eligible))
-
-    # A repeated pivot zone can represent clustered liquidity. The closest
-    # confirmed opposing level remains the destination; the buffer avoids
-    # requiring an exact touch of the pivot price.
-    if opposing_candidates:
-        _, opposing, source_tf = min(opposing_candidates, key=lambda z: z[0])
-        target_buffer = max(0.08 * a5, 0.05 * a1)
-        structural_dist = abs(opposing-entry) - target_buffer
-        if structural_dist <= 0:
-            structural_dist = abs(opposing-entry) * 0.5
-        tp1_dist = structural_dist
-        tp1_basis = f'{source_tf} opposing swing/liquidity objective, front-run by ATR buffer'
+    # Scalping target geometry: the official simulated exit is TP1.
+    # Use a modest first target (0.75R) to test quick V75 moves, but do not
+    # place TP1 beyond the nearest confirmed opposing M5 pivot.
+    # If nearby structure leaves less than 0.75R room, skip rather than
+    # pretending the target is realistically reachable.
+    opposing = _nearest_pivot(m5[-30:], direction, entry)
+    max_tp1_rr = float(os.getenv("SCALP_TP1_MAX_RR", "1.00"))
+    if direction == 'BULLISH':
+        structural_dist = (opposing - entry) if opposing is not None else 0
     else:
-        # Only when no confirmed opposing swing exists do we use a volatility
-        # fallback. It is explicit in the journal so results can be segmented.
-        tp1_dist = max(0.80 * risk, 1.00 * a5)
-        tp1_basis = 'ATR fallback — no confirmed opposing M5/M15 swing'
+        structural_dist = (entry - opposing) if opposing is not None else 0
 
-    # Momentum affects confidence in reachability, not the signal direction.
-    # If both trigger timeframes are opposed, require a closer target rather
-    # than stretching toward a distant swing.
-    m1_read = r.get('M1', {})
-    m5_read = r.get('M5', {})
-    aligned = sum(1 for x in (m1_read, m5_read)
-                  if x.get('momentum') == direction or x.get('displacement') == direction)
-    if aligned == 0:
-        tp1_dist = min(tp1_dist, max(0.65 * risk, 0.75 * a5))
-        tp1_basis += ' | reduced for weak M1/M5 momentum'
+    # v3.7: more responsive TP1 geometry. A closer structural target is
+    # acceptable from 0.40R upward; do not reject solely because it misses
+    # the old 0.75R preference. If no confirmed opposing pivot is available,
+    # use a conservative 0.50R TP1 and label it explicitly as ATR fallback.
+    if opposing is None:
+        tp1_dist = 0.50 * risk
+        tp1_basis = '0.50R fallback — no confirmed opposing M5 pivot'
+    elif structural_dist > 0:
+        # In inverse mode, this original TP1 becomes the inverse stop-loss.
+        # Keep the structure-aware target, but do not reject it on an RR threshold.
+        tp1_dist = min(structural_dist, max_tp1_rr * risk)
+        tp1_basis = 'M5 opposing structure (source target; becomes inverse SL)'
+    else:
+        # If a pivot is not usable, retain a deterministic fallback level.
+        tp1_dist = 0.50 * risk
+        tp1_basis = '0.50R fallback — no usable opposing M5 pivot'
 
-    # The target is still dictated by structure; RR is a viability check, not
-    # a formula used to invent a farther TP. Skip only when the objective gives
-    # too little room relative to the structural stop.
-    min_tp1_rr = float(os.getenv('REV2_SCALP_TP1_MIN_RR', '0.65'))
-    planned_rr = tp1_dist / risk if risk > 0 else 0
-    if planned_rr < min_tp1_rr:
-        return {
-            'quality':'SCALP TARGET TOO CLOSE — SKIP', 'entry':entry, 'sl':sl,
-            'risk':risk, 'structural_dist':round(tp1_dist, 5),
-            'required_dist':round(min_tp1_rr * risk, 5),
-            'opposing_pivot':opposing if opposing_candidates else None,
-            'reason':f'nearest realistic objective offers only {planned_rr:.2f}R; minimum is {min_tp1_rr:.2f}R',
-            'sl_basis':'M1/M5 swing invalidation + ATR buffer', 'tp1_basis':tp1_basis,
-        }
-
-    # V3.8: cap far structural targets. The supplied 21-trade sample averaged
-    # only 1.17R MFE while the planned targets were commonly 1.6R–3.0R.
-    # Keep nearer structural objectives, but do not demand more than 1.25R.
-    max_target_r = float(os.getenv('REV3_MAX_TP1_RR', '1.25'))
-    if risk > 0 and tp1_dist > max_target_r * risk:
-        tp1_dist = max_target_r * risk
-        tp1_basis += f' | capped at {max_target_r:.2f}R reachability limit'
-
+    # Only one source target is needed: it will become the inverse stop-loss.
     source_tp1 = entry + tp1_dist if direction == 'BULLISH' else entry - tp1_dist
 
     return {
         'quality':'STRUCTURAL-LOCAL',
         'entry':entry,'sl':sl,'tp1':source_tp1,
-        'risk':risk,'tp1_basis':tp1_basis, 'planned_rr':round(tp1_dist / risk, 4),
-        'sl_basis':'M1/M5 swing invalidation + ATR buffer','risk_cap':round(max_risk,5),'risk_mode':'ADAPTIVE_STRONG' if strong else 'STANDARD',
+        'risk':risk,'tp1_basis':tp1_basis,
+        'sl_basis':'M1/M5 local invalidation','risk_cap':round(max_risk,5),'risk_mode':'ADAPTIVE_STRONG' if strong else 'STANDARD',
     }
 
 
 
 def _continuation_context(frames, direction):
-    """M15 defines the short-term context, M5 validates the setup, M1 triggers it.
+    """Identify trend-continuation opportunities without requiring a liquidity sweep.
 
-    No H4/H1/M30 context is consulted or used to veto a continuation.
+    This is deliberately conservative: the higher timeframes establish direction,
+    while M15/M5/M1 provide the continuation trigger. It does not replace the
+    existing reversal setup; it adds a second path for clean directional moves.
     """
     if direction not in ('BULLISH','BEARISH'):
         return {'valid':False,'kind':'NONE','reasons':[],'score':0}
+    h4=frames.get('H4',[]); h1=frames.get('H1',[]); m30=frames.get('M30',[])
     m15=frames.get('M15',[]); m5=frames.get('M5',[]); m1=frames.get('M1',[])
-    if min(map(len,(m15,m5,m1))) < 8:
+    if min(map(len,(h1,m30,m15,m5,m1))) < 8:
         return {'valid':False,'kind':'NONE','reasons':[],'score':0}
-    r={tf:summarize(frames.get(tf,[])) for tf in ('M15','M5','M1')}
+
+    r={tf:summarize(frames.get(tf,[])) for tf in ('H4','H1','M30','M15','M5','M1')}
     reasons=[]; score=0
-    # M15 supplies context but may be neutral while a structural transition forms.
-    if r['M15']['trend']==direction:
-        score += 25; reasons.append('M15 trend aligned')
-    elif r['M15']['mss']==direction or r['M15']['bos']==direction:
-        score += 20; reasons.append('M15 structural transition')
+
+    # H1 is the primary directional filter. H4 is context only.
+    if r['H1']['trend']==direction:
+        score += 25; reasons.append('H1 trend aligned')
+    else:
+        return {'valid':False,'kind':'NONE','reasons':['H1 trend not aligned'],'score':score}
+    if r['M30']['trend']==direction:
+        score += 20; reasons.append('M30 trend aligned')
+    elif r['M30']['trend'] not in ('NEUTRAL','INSUFFICIENT'):
+        return {'valid':False,'kind':'NONE','reasons':['M30 trend conflict'],'score':score}
+    else:
+        score += 8; reasons.append('M30 neutral — acceptable continuation context')
+
+    if r['H4']['trend']==direction:
+        score += 10; reasons.append('H4 aligned')
+    elif r['H4']['trend'] in ('NEUTRAL','INSUFFICIENT'):
+        score += 4; reasons.append('H4 neutral')
+
+    # M15 should participate or be transitioning toward the HTF direction.
+    m15_participating = r['M15']['trend']==direction or r['M15']['mss']==direction or r['M15']['bos']==direction
+    if m15_participating:
+        score += 15; reasons.append('M15 participation/transition')
     elif r['M15']['trend'] not in ('NEUTRAL','INSUFFICIENT'):
-        score -= 8; reasons.append('M15 trend opposing; lower-timeframe confirmation required')
-    else:
-        score += 8; reasons.append('M15 neutral context')
+        return {'valid':False,'kind':'NONE','reasons':['M15 trend conflict'],'score':score}
+
+    # M5 must not be structurally opposed. M1 supplies the actual trigger.
     if r['M5']['trend']==direction:
-        score += 20; reasons.append('M5 trend aligned')
-    elif r['M5']['mss']==direction or r['M5']['bos']==direction:
-        score += 15; reasons.append('M5 structural transition')
-    elif r['M5']['trend'] not in ('NEUTRAL','INSUFFICIENT'):
-        return {'valid':False,'kind':'NONE','reasons':reasons+['M5 trend conflict'],'score':max(0,score)}
+        score += 10; reasons.append('M5 aligned')
+    elif r['M5']['trend'] in ('NEUTRAL','INSUFFICIENT'):
+        score += 4; reasons.append('M5 neutral')
     else:
-        score += 5; reasons.append('M5 neutral')
-    trigger=(r['M1']['mss']==direction or r['M1']['bos']==direction or r['M1']['displacement']==direction)
+        return {'valid':False,'kind':'NONE','reasons':['M5 trend conflict'],'score':score}
+
+    trigger = (r['M1']['mss']==direction or r['M1']['bos']==direction or
+               r['M1']['displacement']==direction)
     if trigger:
-        score += 25; reasons.append('M1 structural/displacement trigger')
+        score += 15; reasons.append('M1 continuation trigger')
     else:
-        return {'valid':False,'kind':'NONE','reasons':reasons+['no M1 continuation trigger'],'score':score}
+        return {'valid':False,'kind':'NONE','reasons':['no M1 continuation trigger'],'score':score}
+
+    # A pullback is present when the most recent few M1 candles contain
+    # counter-direction pressure before the current directional trigger.
     last=m1[-6:]
-    opposite=sum(1 for z in last[:-1] if ((direction=='BULLISH' and z['close']<z['open']) or (direction=='BEARISH' and z['close']>z['open'])))
+    opposite=0
+    for z in last[:-1]:
+        if direction=='BULLISH' and z['close']<z['open']: opposite += 1
+        elif direction=='BEARISH' and z['close']>z['open']: opposite += 1
+    pullback = opposite >= 2
+
+    # Avoid chasing a deeply extended trigger candle.
     if r['M1']['extension']=='EXTENDED':
         return {'valid':False,'kind':'NONE','reasons':reasons+['M1 extended — do not chase'],'score':score}
     if r['M1']['exhaustion']['score']>=60:
         return {'valid':False,'kind':'NONE','reasons':reasons+['M1 exhaustion too high'],'score':score}
-    if opposite>=2:
-        score+=5; reasons.append('M1 pullback before continuation'); kind='PULLBACK CONTINUATION'
-    else: kind='MOMENTUM CONTINUATION'
-    return {'valid':score>=55,'kind':kind,'reasons':reasons,'score':min(100,score)}
+
+    if pullback:
+        score += 5; reasons.append('M1 pullback before continuation')
+        kind='PULLBACK CONTINUATION'
+    else:
+        kind='MOMENTUM CONTINUATION'
+
+    return {'valid':score>=65,'kind':kind,'reasons':reasons,'score':min(100,score)}
+
 
 
 def _entry_confirmation(frames, direction):
@@ -269,118 +265,80 @@ def _continuation_fast_confirmation(frames, direction, readings):
 
 
 def _structural_transition_context(frames, direction):
-    """Detect a transition using M15 bridge evidence and M5/M1 confirmation only."""
+    """Detect an early structural transition against still-unflipped H4/H1 context.
+
+    This is intentionally stricter than simply allowing a lower-timeframe trend
+    conflict. It requires M30/M15 transition evidence plus M5/M1 structural
+    confirmation, displacement, acceptable exhaustion, and no micro-timeframe
+    conflict. H4/H1 remain context rather than absolute vetoes.
+    """
     if direction not in ('BULLISH','BEARISH'):
         return {'valid':False,'score':0,'kind':'NONE','reasons':[]}
-    r={tf:summarize(frames.get(tf,[])) for tf in ('M15','M5','M1')}
+    r={tf:summarize(frames.get(tf,[])) for tf in ('H4','H1','M30','M15','M5','M1')}
     if min(r[t]['count'] for t in r) <= 0:
         return {'valid':False,'score':0,'kind':'NONE','reasons':[]}
-    reasons=[]; score=0; bridge=0; micro_events=0
-    for tf,pts in (('M15',25),('M5',20),('M1',20)):
+    reasons=[]; score=0
+    opp='BEARISH' if direction=='BULLISH' else 'BULLISH'
+    # Higher timeframes are allowed to lag. A direct opposite H4 trend is still
+    # a strong warning, while H1 may remain unchanged during an early transition.
+    if r['H4']['trend']==direction:
+        score += 5; reasons.append('H4 context aligned')
+    elif r['H4']['trend'] in ('NEUTRAL','INSUFFICIENT'):
+        score += 7; reasons.append('H4 neutral context')
+    else:
+        score -= 10; reasons.append('H4 opposing context')
+
+    if r['H1']['trend']==direction:
+        score += 4; reasons.append('H1 already aligned')
+    elif r['H1']['trend'] in ('NEUTRAL','INSUFFICIENT'):
+        score += 8; reasons.append('H1 neutral transition context')
+    else:
+        score -= 4; reasons.append('H1 opposing trend')
+
+    # M30/M15 are the transition bridge. At least one must show an actual
+    # structural event; trend alone is not enough.
+    bridge=0
+    for tf,pts in (('M30',15),('M15',18)):
         x=r[tf]
-        if x['trend']==direction: score+=5; reasons.append(tf+' trend aligned')
-        if x['mss']==direction: score+=pts*0.55; reasons.append(tf+' MSS'); bridge += int(tf=='M15'); micro_events += int(tf in ('M5','M1'))
-        if x['bos']==direction: score+=pts*0.35; reasons.append(tf+' BOS'); bridge += int(tf=='M15'); micro_events += int(tf in ('M5','M1'))
-        if x['displacement']==direction: score+=7; reasons.append(tf+' displacement')
-        if x['fvg']==direction: score+=3; reasons.append(tf+' FVG')
-        if x['momentum']==direction: score+=3; reasons.append(tf+' momentum')
-    if bridge>=1: score+=8; reasons.append('M15 structural bridge confirmed')
-    if micro_events>=2: score+=10; reasons.append('M5/M1 structural confirmation')
+        if x['trend']==direction: score += pts*0.45; reasons.append(tf+' trend transitioned')
+        if x['mss']==direction: score += pts*0.45; bridge += 1; reasons.append(tf+' MSS')
+        if x['bos']==direction: score += pts*0.35; bridge += 1; reasons.append(tf+' BOS')
+        if x['displacement']==direction: score += 5; reasons.append(tf+' displacement')
+        if x['momentum']==direction: score += 3; reasons.append(tf+' momentum')
+
+    # M5/M1 must confirm the transition, preferably with MSS/BOS on both.
+    micro_events=0
+    for tf,pts in (('M5',20),('M1',20)):
+        x=r[tf]
+        if x['trend']==direction: score += 5; reasons.append(tf+' trend aligned')
+        if x['mss']==direction: score += pts*0.55; micro_events += 1; reasons.append(tf+' MSS')
+        if x['bos']==direction: score += pts*0.35; micro_events += 1; reasons.append(tf+' BOS')
+        if x['displacement']==direction: score += 7; reasons.append(tf+' displacement')
+        if x['fvg']==direction: score += 3; reasons.append(tf+' FVG')
+        if x['momentum']==direction: score += 3; reasons.append(tf+' momentum')
+
+    # A transition is stronger when the old direction is being invalidated on
+    # M30/M15 rather than merely oscillating on M1.
+    if bridge >= 1: score += 8; reasons.append('M30/M15 structural bridge confirmed')
+    if micro_events >= 2: score += 10; reasons.append('M5/M1 structural confirmation')
+
     exhaustion=max(r[t]['exhaustion']['score'] for t in ('M15','M5','M1'))
-    if exhaustion>=60: score-=20; reasons.append('exhaustion too high')
-    elif exhaustion>=45: score-=8; reasons.append('elevated exhaustion')
-    adverse=sum(1 for t in ('M5','M1') if r[t]['trend'] not in (direction,'NEUTRAL','INSUFFICIENT') or r[t]['momentum'] not in (direction,'NEUTRAL','INSUFFICIENT'))
-    if adverse>=2: score-=15; reasons.append('M5 and M1 conflict')
+    if exhaustion >= 60:
+        score -= 20; reasons.append('exhaustion too high')
+    elif exhaustion >= 45:
+        score -= 8; reasons.append('elevated exhaustion')
+
+    # Do not accept a transition while both trigger timeframes are still
+    # structurally/momentum opposed to the intended direction.
+    adverse=sum(1 for t in ('M5','M1') if
+                r[t]['trend'] not in (direction,'NEUTRAL','INSUFFICIENT') or
+                r[t]['momentum'] not in (direction,'NEUTRAL','INSUFFICIENT'))
+    if adverse >= 2:
+        score -= 15; reasons.append('micro conflict')
+
     score=round(max(0,min(100,score)),1)
-    valid=(bridge>=1 and micro_events>=1 and exhaustion<60 and adverse<2 and score>=55)
+    valid=(bridge >= 1 and micro_events >= 2 and exhaustion < 60 and adverse < 2 and score >= 68)
     return {'valid':valid,'score':score,'kind':'STRUCTURAL TRANSITION' if valid else 'NONE','reasons':reasons[-16:]}
-
-
-def _market_regime(readings):
-    """Classify regime from M15/M5/M1 only; no higher-timeframe veto."""
-    tfs=('M15','M5','M1')
-    bull=sum(readings.get(tf,{}).get('trend')=='BULLISH' for tf in tfs)
-    bear=sum(readings.get(tf,{}).get('trend')=='BEARISH' for tf in tfs)
-    neutral=sum(readings.get(tf,{}).get('trend') in ('NEUTRAL','INSUFFICIENT',None) for tf in tfs)
-    if bull>=2: return {'label':'LOWER-TF BULLISH TREND','bias':'BULLISH','alignment':bull,'range_risk':False}
-    if bear>=2: return {'label':'LOWER-TF BEARISH TREND','bias':'BEARISH','alignment':bear,'range_risk':False}
-    if neutral>=2: return {'label':'LOWER-TF RANGE / TRANSITION / MIXED','bias':'MIXED','alignment':max(bull,bear),'range_risk':True}
-    return {'label':'LOWER-TF TRANSITION','bias':'MIXED','alignment':max(bull,bear),'range_risk':True}
-
-
-def _improved_entry_confirmation(frames, readings, direction):
-    """Balanced confirmation: retain a directional close and require 2 of 3 independent cues.
-
-    This is intentionally less restrictive than V3.8's all-of-three gate, while
-    still preventing a candle-only signal from qualifying as a trade.
-    """
-    candles = frames.get("M1", [])
-    if len(candles) < 8:
-        return {"valid":False,"reason":"insufficient M1 candles","score":0}
-    last = candles[-1]
-    close_directional = (last["close"] > last["open"]) if direction == "BULLISH" else (last["close"] < last["open"])
-    m1 = readings.get("M1", {})
-    m5 = readings.get("M5", {})
-    structural = any(m1.get(k) == direction for k in ("mss", "bos", "displacement"))
-    m5_support = any(m5.get(k) == direction for k in ("momentum", "mss", "bos", "displacement"))
-    cues = int(structural) + int(m5_support) + int(m1.get("momentum") == direction)
-    valid = close_directional and cues >= 2
-    reasons = []
-    if not close_directional: reasons.append("last completed M1 candle did not close in trade direction")
-    if structural: reasons.append("M1 structure/displacement aligned")
-    if m5_support: reasons.append("M5 directional support")
-    if m1.get("momentum") == direction: reasons.append("M1 momentum aligned")
-    if cues < 2: reasons.append(f"only {cues}/3 confirmation cues aligned; need 2")
-    return {"valid":valid,"score":cues,"reason":"balanced confirmation passed" if valid else "; ".join(reasons)}
-
-
-def _entry_timing_filter(frames, readings, direction, setup_type):
-    """Experimental entry-timing gate; does not change signal direction or SL/TP logic.
-
-    Blocks entries when M15/M5 still show persistent pressure against the proposed
-    trade, and avoids continuation entries when the M5 move is already extended.
-    It uses only the candles/readings available at decision time.
-    """
-    if direction not in ('BULLISH', 'BEARISH'):
-        return {'valid': False, 'reason': 'no clear direction', 'checks': []}
-
-    opposite = 'BEARISH' if direction == 'BULLISH' else 'BULLISH'
-    m15 = readings.get('M15', {})
-    m5 = readings.get('M5', {})
-    m1 = readings.get('M1', {})
-    checks = []
-
-    # Strong counter-direction pressure on both M15 and M5 suggests that a
-    # pullback may still be active rather than completed.
-    m15_counter = (m15.get('momentum') == opposite)
-    m5_counter = (m5.get('momentum') == opposite)
-    m15m5_trend_counter = (m15.get('trend') == opposite and m5.get('trend') == opposite)
-    m5m1_counter = (m5.get('momentum') == opposite and m1.get('momentum') == opposite)
-
-    if m15_counter and m5_counter:
-        checks.append('M15 and M5 momentum still oppose proposed direction')
-        return {'valid': False, 'reason': '; '.join(checks), 'checks': checks}
-    if m15m5_trend_counter and m5m1_counter:
-        checks.append('M15/M5 trends and M5/M1 momentum still oppose proposed direction')
-        return {'valid': False, 'reason': '; '.join(checks), 'checks': checks}
-
-    # For continuation entries, avoid chasing a stretched M5 move even when M1
-    # produces a trigger. This is an additional guard to the existing M1 checks.
-    if setup_type not in ('REVERSAL', 'STRUCTURAL TRANSITION') and m5.get('extension') == 'EXTENDED':
-        checks.append('M5 extended — wait for a fresh pullback')
-        return {'valid': False, 'reason': '; '.join(checks), 'checks': checks}
-
-    # In compressed/choppy M5 conditions, require actual directional structure or
-    # displacement on M1; neutral momentum alone is not enough to accept a setup.
-    if m5.get('volatility') == 'COMPRESSED':
-        micro_trigger = any(m1.get(k) == direction for k in ('mss', 'bos', 'displacement'))
-        if not micro_trigger:
-            checks.append('M5 compressed and no directional M1 structure/displacement')
-            return {'valid': False, 'reason': '; '.join(checks), 'checks': checks}
-
-    checks.append('pullback pressure not persistently opposed')
-    checks.append('no M5 extension/chop veto')
-    return {'valid': True, 'reason': 'entry timing checks passed', 'checks': checks}
 
 
 def _invert_setup_geometry(setup, direction, state, setup_type):
@@ -433,20 +391,20 @@ def analyze(frames):
         trend_points=sum(WEIGHTS[t] for t in WEIGHTS if r[t]['trend']==direction) / 2.0
         # 25 points: actual structural events, with HTF weighted more heavily.
         event_points=0.0
-        for tf,pts in (('M15',6),('M5',5),('M1',4)):
+        for tf,pts in (('H4',5),('H1',7),('M30',6),('M15',4),('M5',2),('M1',1)):
             if r[tf]['bos']==direction: event_points += pts
             if r[tf]['mss']==direction: event_points += pts
         event_points=min(25.0,event_points)
         # 15 points: displacement + momentum, supporting structure rather than
         # acting as entry confirmation.
         support_points=0.0
-        for tf,pts in (('M15',5),('M5',5),('M1',5)):
+        for tf,pts in (('H1',3),('M30',3),('M15',3),('M5',3),('M1',3)):
             if r[tf]['displacement']==direction: support_points += pts*0.7
             if r[tf]['momentum']==direction: support_points += pts*0.3
         support_points=min(15.0,support_points)
         # 10 points: favorable liquidity/FVG context.
         context_points=0.0
-        for tf in ('M15','M5','M1'):
+        for tf in ('H1','M30','M15','M5','M1'):
             if r[tf]['liquidity']==('SELL_SIDE_SWEPT' if direction=='BULLISH' else 'BUY_SIDE_SWEPT'):
                 context_points += 3.0
             if r[tf]['fvg']==direction:
@@ -455,7 +413,7 @@ def analyze(frames):
         structure_score=trend_points+event_points+support_points+context_points
         conflicts=bconf if direction=='BULLISH' else rconf
         # Explicit penalties for evidence that argues against the structural thesis.
-        for tf in ():
+        for tf in ('H1','M30'):
             if r[tf]['liquidity']==('BUY_SIDE_SWEPT' if direction=='BULLISH' else 'SELL_SIDE_SWEPT'):
                 structure_score-=5
         for tf in ('M15','M5','M1'):
@@ -571,105 +529,13 @@ def analyze(frames):
         state='NO TRADE'
     if m1['volatility']=='EXTREME_EXPANSION': state='WAIT — EXTREME VOLATILITY'
 
-    # V2 RESPONSIVE INVERSE EXPERIMENT:
-    # The source signal's own timing gate was designed for the source direction.
-    # Applying it as a hard veto before inversion, then demanding a second
-    # opposite-direction timing gate, caused two competing gates to suppress
-    # almost every inverse setup. Keep timing diagnostics, but use the already
-    # validated source trigger + regime + inverse geometry as the admission path.
-    timing_filter = {'valid': True, 'reason': 'diagnostic only in V2; source timing is not a hard veto for inverse setups', 'checks': []}
-    original_direction = direction
-    if state in ('BUY SETUP', 'SELL SETUP'):
-        source_timing = _entry_timing_filter(frames, r, direction, setup_type)
-        timing_filter = {'valid': source_timing.get('valid', False),
-                         'reason': source_timing.get('reason', 'source timing diagnostic'),
-                         'checks': source_timing.get('checks', []),
-                         'mode': 'DIAGNOSTIC_ONLY'}
-        # Reverse BUY/SELL signals only. The source setup has already passed
-        # the original engine's trigger and entry-confirmation checks above.
-        direction = 'BEARISH' if direction == 'BULLISH' else 'BULLISH'
-        state = 'SELL SETUP' if state == 'BUY SETUP' else 'BUY SETUP'
-        timing_filter['emitted_direction'] = 'SELL' if direction == 'BEARISH' else 'BUY'
-        timing_filter['source_direction'] = 'BUY' if original_direction == 'BULLISH' else 'SELL'
-
-    regime = _market_regime(r)
-    regime_gate = {"valid": True, "reason": "not evaluated — no candidate setup"}
-    confirmation_gate = {"valid": True, "reason": "not evaluated — no candidate setup"}
     setup=_setup(frames,direction,r) if state in ('BUY SETUP','SELL SETUP') else None
-    if setup and state in ('BUY SETUP','SELL SETUP'):
-        setup['source_direction'] = 'BUY' if original_direction == 'BULLISH' else 'SELL' if original_direction == 'BEARISH' else 'UNKNOWN'
-        setup['emitted_direction'] = 'BUY' if direction == 'BULLISH' else 'SELL'
 
-    if setup and setup.get('quality') in ('INVALID STOP GEOMETRY — SKIP', 'SCALP TARGET TOO CLOSE — SKIP'):
-        state = 'NO TRADE — SCALP GEOMETRY SKIP — ' + setup.get('reason', 'invalid source geometry')
-        setup = None
-
-    if setup and state in ('BUY SETUP','SELL SETUP'):
-        # V3.9 balanced admission: allow more qualified opportunities without
-        # dropping directional confirmation. Require a directional M1 close and
-        # 2/3 independent cues. In mixed regimes, permit a trade only when the
-        # transition is valid OR M15/M5/M1 provide multi-timeframe support and
-        # only M15/M5/M1 participate; H4/H1/M30 are not evaluated.
-        emitted_confirmation = _improved_entry_confirmation(frames, r, direction)
-        emitted_transition = _structural_transition_context(frames, direction)
-        transition_matches = bool(emitted_transition.get('valid'))
-        regime_matches = regime.get('bias') == direction and not regime.get('range_risk')
-        m15 = r.get('M15', {}); m5 = r.get('M5', {}); m1 = r.get('M1', {})
-        lower_support = sum([
-            m15.get('trend') == direction or m15.get('mss') == direction or m15.get('bos') == direction,
-            m5.get('trend') == direction or m5.get('momentum') == direction or m5.get('mss') == direction or m5.get('bos') == direction,
-            m1.get('momentum') == direction or m1.get('mss') == direction or m1.get('bos') == direction or m1.get('displacement') == direction,
-        ])
-        balanced_regime_ok = lower_support >= 2
-        if not emitted_confirmation.get('valid'):
-            confirmation_gate = {
-                'valid': False,
-                'reason': 'reversed-direction confirmation failed: ' + emitted_confirmation.get('reason', 'no confirmation'),
-                'mode': 'BALANCED_2_OF_3_CONFIRMATION'
-            }
-            state = 'WAIT — REVERSED DIRECTION NOT CONFIRMED — ' + confirmation_gate['reason']
-            setup = None
-        elif not (regime_matches or transition_matches or balanced_regime_ok):
-            regime_gate = {
-                'valid': False,
-                'reason': f"emitted direction {direction} lacks regime, transition, or balanced multi-timeframe support ({lower_support}/3)"
-            }
-            state = 'WAIT — REGIME/REVERSAL CONFLICT — ' + regime_gate['reason']
-            setup = None
-        else:
-            regime_gate = {
-                'valid': True,
-                'reason': 'emitted direction aligns with M15/M5/M1 regime' if regime_matches else ('M15/M5/M1 structural transition confirmed' if transition_matches else f'balanced M15/M5/M1 support {lower_support}/3')
-            }
-            confirmation_gate = {
-                'valid': True,
-                'reason': emitted_confirmation.get('reason'),
-                'mode': 'BALANCED_2_OF_3_CONFIRMATION'
-            }
-
-    if setup and state in ('BUY SETUP','SELL SETUP'):
-        # Final geometry audit: directionally valid SL/TP, bounded stop relative
-        # to M5 ATR, and a structural target that clears minimum RR.
-        entry = float(setup['entry']); sl = float(setup['sl']); tp1 = float(setup['tp1'])
-        risk = abs(entry - sl); reward = abs(tp1 - entry)
-        a5 = atr(frames.get('M5', []), 14) or 0.0
-        valid_geometry = (risk > 0 and ((direction == 'BULLISH' and sl < entry < tp1) or
-                                        (direction == 'BEARISH' and tp1 < entry < sl)))
-        max_stop = float(os.getenv('REV2_MAX_STOP_ATR_M5', '2.50'))
-        min_rr = float(os.getenv('REV2_SCALP_TP1_MIN_RR', '0.75'))
-        rr = reward / risk if risk else 0.0
-        if not valid_geometry:
-            setup['quality'] = 'INVALID STOP/TARGET GEOMETRY — SKIP'
-            setup['reason'] = 'SL/TP must be on the correct side of entry for the emitted reversed direction'
-        elif a5 and risk > max_stop * a5:
-            setup['quality'] = 'STOP TOO WIDE — SKIP'
-            setup['reason'] = f'structural stop is {risk/a5:.2f} M5 ATR; maximum allowed is {max_stop:.2f}'
-        elif rr < min_rr:
-            setup['quality'] = 'TARGET RR TOO LOW — SKIP'
-            setup['reason'] = f'structural target offers {rr:.2f}R; minimum is {min_rr:.2f}R'
-        if setup.get('quality') in ('INVALID STOP/TARGET GEOMETRY — SKIP','STOP TOO WIDE — SKIP','TARGET RR TOO LOW — SKIP'):
-            state = 'NO TRADE — GEOMETRY FILTER — ' + setup.get('reason','invalid geometry')
-            setup = None
+    # DOUBLE-REVERSED EXPERIMENT:
+    # The uploaded inverse layer is intentionally not applied here. Reversing
+    # its direction and swapping its SL/TP1 a second time restores the source
+    # signal direction and original SL/TP1 geometry. This remains paper-only.
+    original_direction = direction
 
     if setup and setup.get('quality') in ('INVALID STOP GEOMETRY — SKIP', 'SCALP TARGET TOO CLOSE — SKIP') and state in ('BUY SETUP','SELL SETUP'):
         # Stop-width cap is disabled. Still reject mathematically invalid stop
@@ -693,7 +559,7 @@ def analyze(frames):
 
     entry_quality=('TRIGGERED' if trigger_ok else 'WAIT FOR PULLBACK' if late_entry else 'WAIT FOR CONFIRMATION')
     all_conflicts=(conflicts+trigger_conflicts)[-12:]
-    return {'readings':r,'direction':direction,'original_direction':original_direction,'signal_mode':'IMPROVED_REVERSED_V3_9_BALANCED','score':structure_score,'structure_score':structure_score,
+    return {'readings':r,'direction':direction,'original_direction':original_direction,'signal_mode':'DOUBLE_REVERSED_BASELINE','score':structure_score,'structure_score':structure_score,
             'trigger_score':trigger_score,'confidence':confidence,'state':state,
             'confirmations':trigger_reasons[-12:],'conflicts':all_conflicts,'setup':setup,'ready':ready,
             'confirmation_count':confirmation_count,'entry_quality':entry_quality,
@@ -701,23 +567,23 @@ def analyze(frames):
             'continuation_reasons':continuation.get('reasons',[]),
             'transition_score':transition.get('score',0),
             'transition_reasons':transition.get('reasons',[]),
-            'entry_gate':entry_gate,'entry_timing_filter':timing_filter,'market_regime':regime,'regime_gate':regime_gate,'improved_confirmation_gate':confirmation_gate,
+            'entry_gate':entry_gate,
             'exhaustion_score':exhaustion_score,'exhaustion_level':exhaustion_level,
             'exhaustion_reasons':exhaustion_reasons[-20:],
             'trigger_reasons':trigger_reasons[-12:],'trigger_conflicts':trigger_conflicts[-10:]}
 
 
 def report(x):
-    lines=['QUINT CAPITAL QUTE V75 IMPROVED REVERSED-SIGNAL V2 RESPONSIVE — PAPER TEST','REVERSED BUY/SELL SIGNALS + REGIME/CONFIRMATION/GEOMETRY GUARDS | ANALYSIS ONLY — NO EXECUTION','='*68,
-           f"STATE: {x['state']}",f"DIRECTION FIELD: {x['direction']} (accepted setups reverse the source BUY/SELL signal)",
+    lines=['QUINT CAPITAL V75 DOUBLE-REVERSED BASELINE — ONE-CANDLE PAPER TEST','SECOND REVERSAL UNDONE: SOURCE DIRECTION + SOURCE SL/TP1 RESTORED | PAPER ONLY — NO BROKER ORDERS','='*68,
+           f"STATE: {x['state']}",f"TEST SIGNAL: {x['direction']} (source direction: {x.get('original_direction','UNKNOWN')})",
            f"STRUCTURE SCORE: {x['structure_score']}/100 (NOT A PROBABILITY)",
            f"TRIGGER SCORE: {x['trigger_score']}/100 (NOT A PROBABILITY)",
            f"CONFIDENCE: {x['confidence']}",f"ENTRY CONFIRMATIONS: {x['confirmation_count']}",
-           f"ENTRY QUALITY: {x['entry_quality']}",f"SETUP TYPE: {x.get('setup_type','NONE')}", f"MARKET REGIME: {x.get('market_regime',{}).get('label','UNKNOWN')}", f"REGIME GATE: {x.get('regime_gate',{}).get('reason','N/A')}", f"IMPROVED CONFIRMATION: {x.get('improved_confirmation_gate',{}).get('reason','N/A')}",
+           f"ENTRY QUALITY: {x['entry_quality']}",f"SETUP TYPE: {x.get('setup_type','NONE')}",
            f"CONTINUATION SCORE: {x.get('continuation_score',0)}/100",
            f"TRANSITION SCORE: {x.get('transition_score',0)}/100",
            f"EXHAUSTION: {x['exhaustion_level']} ({x['exhaustion_score']}/100)"]
-    for t in ('M15','M5','M1'):
+    for t in ('H4','H1','M30','M15','M5','M1'):
         r=x['readings'][t]
         lines.append(f"{t}: {r['trend']} | MOM={r['momentum']} | BOS={r['bos']} | MSS={r['mss']} | DISP={r['displacement']} | FVG={r['fvg']} | LIQ={r['liquidity']} | ZONE={r['zone']} | EXT={r['extension']} | VOL={r['volatility']} | N={r['count']}")
     if x.get('exhaustion_reasons') and x.get('exhaustion_level') in ('HIGH','EXTREME'):
@@ -733,12 +599,9 @@ def report(x):
         if 'tp1' in s:
             tp1_dist=abs(s['tp1']-s['entry'])
             lines.append(f"- TP1 (ONLY TAKE-PROFIT): {s['tp1']:.5f} | DISTANCE={tp1_dist:.5f} points")
-            lines.append('- DIRECTION: original QUTE direction logic preserved')
+            lines.append('- SECOND REVERSAL: source SL and source TP1 geometry restored')
         else:
             lines.append(f"- QUALITY: {s.get('quality','STRUCTURAL')}")
     if x['confirmations']: lines += ['ENTRY CONFIRMATIONS:']+['- '+z for z in x['confirmations']]
     if x['conflicts']: lines += ['CONFLICTS / WARNINGS:']+['- '+z for z in x['conflicts']]
-    tf=x.get('entry_timing_filter', {})
-    if tf:
-        lines.append(f"ENTRY TIMING FILTER: {'PASS' if tf.get('valid') else 'WAIT/BLOCK'} — {tf.get('reason','N/A')}")
     return '\n'.join(lines)
