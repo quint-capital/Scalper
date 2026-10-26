@@ -1,8 +1,9 @@
 import os
 from structure import summarize, atr, _pivots
 
-WEIGHTS={'H4':28,'H1':23,'M30':17,'M15':15,'M5':10,'M1':7}
-MIN={'H4':20,'H1':30,'M30':40,'M15':50,'M5':100,'M1':200}
+# V3.10 lower-timeframe-only model: H4/H1/M30 are not inputs or vetoes.
+WEIGHTS={'M15':30,'M5':25,'M1':20}
+MIN={'M15':50,'M5':100,'M1':200}
 
 
 def _directional_evidence(r, direction):
@@ -12,7 +13,7 @@ def _directional_evidence(r, direction):
         if tr==direction: score += w
         elif tr not in ('NEUTRAL','INSUFFICIENT') and tr!=direction:
             conflicts.append(tf+' trend conflict')
-    for tf in ('H1','M30','M15','M5','M1'):
+    for tf in ('M15','M5','M1'):
         x=r[tf]
         if x['momentum']==direction: score += 2; reasons.append(tf+' momentum')
         if x['displacement']==direction: score += 4; reasons.append(tf+' displacement')
@@ -24,8 +25,8 @@ def _directional_evidence(r, direction):
         elif x['liquidity']==opposite: score -= 8; conflicts.append(tf+' adverse liquidity sweep')
         if x['fvg']==direction: score += 2; reasons.append(tf+' FVG')
     aligned=sum(1 for tf in WEIGHTS if r[tf]['trend']==direction)
-    if aligned>=5: score += 4
-    if aligned==6: score += 2
+    if aligned>=2: score += 4
+    if aligned==3: score += 2
     return score,reasons,conflicts
 
 
@@ -185,84 +186,49 @@ def _setup(frames, direction, r):
 
 
 def _continuation_context(frames, direction):
-    """Identify trend-continuation opportunities without requiring a liquidity sweep.
+    """M15 defines the short-term context, M5 validates the setup, M1 triggers it.
 
-    This is deliberately conservative: the higher timeframes establish direction,
-    while M15/M5/M1 provide the continuation trigger. It does not replace the
-    existing reversal setup; it adds a second path for clean directional moves.
+    No H4/H1/M30 context is consulted or used to veto a continuation.
     """
     if direction not in ('BULLISH','BEARISH'):
         return {'valid':False,'kind':'NONE','reasons':[],'score':0}
-    h4=frames.get('H4',[]); h1=frames.get('H1',[]); m30=frames.get('M30',[])
     m15=frames.get('M15',[]); m5=frames.get('M5',[]); m1=frames.get('M1',[])
-    if min(map(len,(h1,m30,m15,m5,m1))) < 8:
+    if min(map(len,(m15,m5,m1))) < 8:
         return {'valid':False,'kind':'NONE','reasons':[],'score':0}
-
-    r={tf:summarize(frames.get(tf,[])) for tf in ('H4','H1','M30','M15','M5','M1')}
+    r={tf:summarize(frames.get(tf,[])) for tf in ('M15','M5','M1')}
     reasons=[]; score=0
-
-    # H1 is the primary directional filter. H4 is context only.
-    if r['H1']['trend']==direction:
-        score += 25; reasons.append('H1 trend aligned')
-    else:
-        return {'valid':False,'kind':'NONE','reasons':['H1 trend not aligned'],'score':score}
-    if r['M30']['trend']==direction:
-        score += 20; reasons.append('M30 trend aligned')
-    elif r['M30']['trend'] not in ('NEUTRAL','INSUFFICIENT'):
-        return {'valid':False,'kind':'NONE','reasons':['M30 trend conflict'],'score':score}
-    else:
-        score += 8; reasons.append('M30 neutral — acceptable continuation context')
-
-    if r['H4']['trend']==direction:
-        score += 10; reasons.append('H4 aligned')
-    elif r['H4']['trend'] in ('NEUTRAL','INSUFFICIENT'):
-        score += 4; reasons.append('H4 neutral')
-
-    # M15 should participate or be transitioning toward the HTF direction.
-    m15_participating = r['M15']['trend']==direction or r['M15']['mss']==direction or r['M15']['bos']==direction
-    if m15_participating:
-        score += 15; reasons.append('M15 participation/transition')
+    # M15 supplies context but may be neutral while a structural transition forms.
+    if r['M15']['trend']==direction:
+        score += 25; reasons.append('M15 trend aligned')
+    elif r['M15']['mss']==direction or r['M15']['bos']==direction:
+        score += 20; reasons.append('M15 structural transition')
     elif r['M15']['trend'] not in ('NEUTRAL','INSUFFICIENT'):
-        return {'valid':False,'kind':'NONE','reasons':['M15 trend conflict'],'score':score}
-
-    # M5 must not be structurally opposed. M1 supplies the actual trigger.
+        score -= 8; reasons.append('M15 trend opposing; lower-timeframe confirmation required')
+    else:
+        score += 8; reasons.append('M15 neutral context')
     if r['M5']['trend']==direction:
-        score += 10; reasons.append('M5 aligned')
-    elif r['M5']['trend'] in ('NEUTRAL','INSUFFICIENT'):
-        score += 4; reasons.append('M5 neutral')
+        score += 20; reasons.append('M5 trend aligned')
+    elif r['M5']['mss']==direction or r['M5']['bos']==direction:
+        score += 15; reasons.append('M5 structural transition')
+    elif r['M5']['trend'] not in ('NEUTRAL','INSUFFICIENT'):
+        return {'valid':False,'kind':'NONE','reasons':reasons+['M5 trend conflict'],'score':max(0,score)}
     else:
-        return {'valid':False,'kind':'NONE','reasons':['M5 trend conflict'],'score':score}
-
-    trigger = (r['M1']['mss']==direction or r['M1']['bos']==direction or
-               r['M1']['displacement']==direction)
+        score += 5; reasons.append('M5 neutral')
+    trigger=(r['M1']['mss']==direction or r['M1']['bos']==direction or r['M1']['displacement']==direction)
     if trigger:
-        score += 15; reasons.append('M1 continuation trigger')
+        score += 25; reasons.append('M1 structural/displacement trigger')
     else:
-        return {'valid':False,'kind':'NONE','reasons':['no M1 continuation trigger'],'score':score}
-
-    # A pullback is present when the most recent few M1 candles contain
-    # counter-direction pressure before the current directional trigger.
+        return {'valid':False,'kind':'NONE','reasons':reasons+['no M1 continuation trigger'],'score':score}
     last=m1[-6:]
-    opposite=0
-    for z in last[:-1]:
-        if direction=='BULLISH' and z['close']<z['open']: opposite += 1
-        elif direction=='BEARISH' and z['close']>z['open']: opposite += 1
-    pullback = opposite >= 2
-
-    # Avoid chasing a deeply extended trigger candle.
+    opposite=sum(1 for z in last[:-1] if ((direction=='BULLISH' and z['close']<z['open']) or (direction=='BEARISH' and z['close']>z['open'])))
     if r['M1']['extension']=='EXTENDED':
         return {'valid':False,'kind':'NONE','reasons':reasons+['M1 extended — do not chase'],'score':score}
     if r['M1']['exhaustion']['score']>=60:
         return {'valid':False,'kind':'NONE','reasons':reasons+['M1 exhaustion too high'],'score':score}
-
-    if pullback:
-        score += 5; reasons.append('M1 pullback before continuation')
-        kind='PULLBACK CONTINUATION'
-    else:
-        kind='MOMENTUM CONTINUATION'
-
-    return {'valid':score>=65,'kind':kind,'reasons':reasons,'score':min(100,score)}
-
+    if opposite>=2:
+        score+=5; reasons.append('M1 pullback before continuation'); kind='PULLBACK CONTINUATION'
+    else: kind='MOMENTUM CONTINUATION'
+    return {'valid':score>=55,'kind':kind,'reasons':reasons,'score':min(100,score)}
 
 
 def _entry_confirmation(frames, direction):
@@ -303,97 +269,43 @@ def _continuation_fast_confirmation(frames, direction, readings):
 
 
 def _structural_transition_context(frames, direction):
-    """Detect an early structural transition against still-unflipped H4/H1 context.
-
-    This is intentionally stricter than simply allowing a lower-timeframe trend
-    conflict. It requires M30/M15 transition evidence plus M5/M1 structural
-    confirmation, displacement, acceptable exhaustion, and no micro-timeframe
-    conflict. H4/H1 remain context rather than absolute vetoes.
-    """
+    """Detect a transition using M15 bridge evidence and M5/M1 confirmation only."""
     if direction not in ('BULLISH','BEARISH'):
         return {'valid':False,'score':0,'kind':'NONE','reasons':[]}
-    r={tf:summarize(frames.get(tf,[])) for tf in ('H4','H1','M30','M15','M5','M1')}
+    r={tf:summarize(frames.get(tf,[])) for tf in ('M15','M5','M1')}
     if min(r[t]['count'] for t in r) <= 0:
         return {'valid':False,'score':0,'kind':'NONE','reasons':[]}
-    reasons=[]; score=0
-    opp='BEARISH' if direction=='BULLISH' else 'BULLISH'
-    # Higher timeframes are allowed to lag. A direct opposite H4 trend is still
-    # a strong warning, while H1 may remain unchanged during an early transition.
-    if r['H4']['trend']==direction:
-        score += 5; reasons.append('H4 context aligned')
-    elif r['H4']['trend'] in ('NEUTRAL','INSUFFICIENT'):
-        score += 7; reasons.append('H4 neutral context')
-    else:
-        score -= 10; reasons.append('H4 opposing context')
-
-    if r['H1']['trend']==direction:
-        score += 4; reasons.append('H1 already aligned')
-    elif r['H1']['trend'] in ('NEUTRAL','INSUFFICIENT'):
-        score += 8; reasons.append('H1 neutral transition context')
-    else:
-        score -= 4; reasons.append('H1 opposing trend')
-
-    # M30/M15 are the transition bridge. At least one must show an actual
-    # structural event; trend alone is not enough.
-    bridge=0
-    for tf,pts in (('M30',15),('M15',18)):
+    reasons=[]; score=0; bridge=0; micro_events=0
+    for tf,pts in (('M15',25),('M5',20),('M1',20)):
         x=r[tf]
-        if x['trend']==direction: score += pts*0.45; reasons.append(tf+' trend transitioned')
-        if x['mss']==direction: score += pts*0.45; bridge += 1; reasons.append(tf+' MSS')
-        if x['bos']==direction: score += pts*0.35; bridge += 1; reasons.append(tf+' BOS')
-        if x['displacement']==direction: score += 5; reasons.append(tf+' displacement')
-        if x['momentum']==direction: score += 3; reasons.append(tf+' momentum')
-
-    # M5/M1 must confirm the transition, preferably with MSS/BOS on both.
-    micro_events=0
-    for tf,pts in (('M5',20),('M1',20)):
-        x=r[tf]
-        if x['trend']==direction: score += 5; reasons.append(tf+' trend aligned')
-        if x['mss']==direction: score += pts*0.55; micro_events += 1; reasons.append(tf+' MSS')
-        if x['bos']==direction: score += pts*0.35; micro_events += 1; reasons.append(tf+' BOS')
-        if x['displacement']==direction: score += 7; reasons.append(tf+' displacement')
-        if x['fvg']==direction: score += 3; reasons.append(tf+' FVG')
-        if x['momentum']==direction: score += 3; reasons.append(tf+' momentum')
-
-    # A transition is stronger when the old direction is being invalidated on
-    # M30/M15 rather than merely oscillating on M1.
-    if bridge >= 1: score += 8; reasons.append('M30/M15 structural bridge confirmed')
-    if micro_events >= 2: score += 10; reasons.append('M5/M1 structural confirmation')
-
+        if x['trend']==direction: score+=5; reasons.append(tf+' trend aligned')
+        if x['mss']==direction: score+=pts*0.55; reasons.append(tf+' MSS'); bridge += int(tf=='M15'); micro_events += int(tf in ('M5','M1'))
+        if x['bos']==direction: score+=pts*0.35; reasons.append(tf+' BOS'); bridge += int(tf=='M15'); micro_events += int(tf in ('M5','M1'))
+        if x['displacement']==direction: score+=7; reasons.append(tf+' displacement')
+        if x['fvg']==direction: score+=3; reasons.append(tf+' FVG')
+        if x['momentum']==direction: score+=3; reasons.append(tf+' momentum')
+    if bridge>=1: score+=8; reasons.append('M15 structural bridge confirmed')
+    if micro_events>=2: score+=10; reasons.append('M5/M1 structural confirmation')
     exhaustion=max(r[t]['exhaustion']['score'] for t in ('M15','M5','M1'))
-    if exhaustion >= 60:
-        score -= 20; reasons.append('exhaustion too high')
-    elif exhaustion >= 45:
-        score -= 8; reasons.append('elevated exhaustion')
-
-    # Do not accept a transition while both trigger timeframes are still
-    # structurally/momentum opposed to the intended direction.
-    adverse=sum(1 for t in ('M5','M1') if
-                r[t]['trend'] not in (direction,'NEUTRAL','INSUFFICIENT') or
-                r[t]['momentum'] not in (direction,'NEUTRAL','INSUFFICIENT'))
-    if adverse >= 2:
-        score -= 15; reasons.append('micro conflict')
-
+    if exhaustion>=60: score-=20; reasons.append('exhaustion too high')
+    elif exhaustion>=45: score-=8; reasons.append('elevated exhaustion')
+    adverse=sum(1 for t in ('M5','M1') if r[t]['trend'] not in (direction,'NEUTRAL','INSUFFICIENT') or r[t]['momentum'] not in (direction,'NEUTRAL','INSUFFICIENT'))
+    if adverse>=2: score-=15; reasons.append('M5 and M1 conflict')
     score=round(max(0,min(100,score)),1)
-    valid=(bridge >= 1 and micro_events >= 2 and exhaustion < 60 and adverse < 2 and score >= 68)
+    valid=(bridge>=1 and micro_events>=1 and exhaustion<60 and adverse<2 and score>=55)
     return {'valid':valid,'score':score,'kind':'STRUCTURAL TRANSITION' if valid else 'NONE','reasons':reasons[-16:]}
 
 
 def _market_regime(readings):
-    """Classify broad regime from completed timeframe readings, not a prediction."""
-    tfs = ("H4", "H1", "M30", "M15")
-    bull = sum(readings.get(tf, {}).get("trend") == "BULLISH" for tf in tfs)
-    bear = sum(readings.get(tf, {}).get("trend") == "BEARISH" for tf in tfs)
-    neutral = sum(readings.get(tf, {}).get("trend") in ("NEUTRAL", "INSUFFICIENT", None) for tf in tfs)
-    if bull >= 3:
-        return {"label":"BULLISH TREND", "bias":"BULLISH", "alignment":bull, "range_risk":False}
-    if bear >= 3:
-        return {"label":"BEARISH TREND", "bias":"BEARISH", "alignment":bear, "range_risk":False}
-    if readings.get("H4", {}).get("trend") == readings.get("H1", {}).get("trend") and readings.get("H4", {}).get("trend") in ("BULLISH", "BEARISH"):
-        return {"label":"TREND WITH COUNTERTREND PULLBACK", "bias":readings["H4"]["trend"], "alignment":2, "range_risk":False}
-    if neutral >= 2 or (bull < 3 and bear < 3):
-        return {"label":"RANGE / TRANSITION / MIXED", "bias":"MIXED", "alignment":max(bull,bear), "range_risk":True}
-    return {"label":"TRANSITION", "bias":"MIXED", "alignment":max(bull,bear), "range_risk":True}
+    """Classify regime from M15/M5/M1 only; no higher-timeframe veto."""
+    tfs=('M15','M5','M1')
+    bull=sum(readings.get(tf,{}).get('trend')=='BULLISH' for tf in tfs)
+    bear=sum(readings.get(tf,{}).get('trend')=='BEARISH' for tf in tfs)
+    neutral=sum(readings.get(tf,{}).get('trend') in ('NEUTRAL','INSUFFICIENT',None) for tf in tfs)
+    if bull>=2: return {'label':'LOWER-TF BULLISH TREND','bias':'BULLISH','alignment':bull,'range_risk':False}
+    if bear>=2: return {'label':'LOWER-TF BEARISH TREND','bias':'BEARISH','alignment':bear,'range_risk':False}
+    if neutral>=2: return {'label':'LOWER-TF RANGE / TRANSITION / MIXED','bias':'MIXED','alignment':max(bull,bear),'range_risk':True}
+    return {'label':'LOWER-TF TRANSITION','bias':'MIXED','alignment':max(bull,bear),'range_risk':True}
 
 
 def _improved_entry_confirmation(frames, readings, direction):
@@ -521,20 +433,20 @@ def analyze(frames):
         trend_points=sum(WEIGHTS[t] for t in WEIGHTS if r[t]['trend']==direction) / 2.0
         # 25 points: actual structural events, with HTF weighted more heavily.
         event_points=0.0
-        for tf,pts in (('H4',5),('H1',7),('M30',6),('M15',4),('M5',2),('M1',1)):
+        for tf,pts in (('M15',6),('M5',5),('M1',4)):
             if r[tf]['bos']==direction: event_points += pts
             if r[tf]['mss']==direction: event_points += pts
         event_points=min(25.0,event_points)
         # 15 points: displacement + momentum, supporting structure rather than
         # acting as entry confirmation.
         support_points=0.0
-        for tf,pts in (('H1',3),('M30',3),('M15',3),('M5',3),('M1',3)):
+        for tf,pts in (('M15',5),('M5',5),('M1',5)):
             if r[tf]['displacement']==direction: support_points += pts*0.7
             if r[tf]['momentum']==direction: support_points += pts*0.3
         support_points=min(15.0,support_points)
         # 10 points: favorable liquidity/FVG context.
         context_points=0.0
-        for tf in ('H1','M30','M15','M5','M1'):
+        for tf in ('M15','M5','M1'):
             if r[tf]['liquidity']==('SELL_SIDE_SWEPT' if direction=='BULLISH' else 'BUY_SIDE_SWEPT'):
                 context_points += 3.0
             if r[tf]['fvg']==direction:
@@ -543,7 +455,7 @@ def analyze(frames):
         structure_score=trend_points+event_points+support_points+context_points
         conflicts=bconf if direction=='BULLISH' else rconf
         # Explicit penalties for evidence that argues against the structural thesis.
-        for tf in ('H1','M30'):
+        for tf in ():
             if r[tf]['liquidity']==('BUY_SIDE_SWEPT' if direction=='BULLISH' else 'SELL_SIDE_SWEPT'):
                 structure_score-=5
         for tf in ('M15','M5','M1'):
@@ -697,7 +609,7 @@ def analyze(frames):
         # dropping directional confirmation. Require a directional M1 close and
         # 2/3 independent cues. In mixed regimes, permit a trade only when the
         # transition is valid OR M15/M5/M1 provide multi-timeframe support and
-        # the major H4/H1 context is not unanimously opposed.
+        # only M15/M5/M1 participate; H4/H1/M30 are not evaluated.
         emitted_confirmation = _improved_entry_confirmation(frames, r, direction)
         emitted_transition = _structural_transition_context(frames, direction)
         transition_matches = bool(emitted_transition.get('valid'))
@@ -708,9 +620,7 @@ def analyze(frames):
             m5.get('trend') == direction or m5.get('momentum') == direction or m5.get('mss') == direction or m5.get('bos') == direction,
             m1.get('momentum') == direction or m1.get('mss') == direction or m1.get('bos') == direction or m1.get('displacement') == direction,
         ])
-        major_context = [r.get(tf, {}).get('trend') for tf in ('H4', 'H1')]
-        major_opposed = all(t not in (direction, 'NEUTRAL', 'INSUFFICIENT') for t in major_context)
-        balanced_regime_ok = lower_support >= 2 and not major_opposed
+        balanced_regime_ok = lower_support >= 2
         if not emitted_confirmation.get('valid'):
             confirmation_gate = {
                 'valid': False,
@@ -729,7 +639,7 @@ def analyze(frames):
         else:
             regime_gate = {
                 'valid': True,
-                'reason': 'emitted direction aligns with regime' if regime_matches else ('structural transition confirmed' if transition_matches else f'balanced lower-timeframe support {lower_support}/3; major context not unanimously opposed')
+                'reason': 'emitted direction aligns with M15/M5/M1 regime' if regime_matches else ('M15/M5/M1 structural transition confirmed' if transition_matches else f'balanced M15/M5/M1 support {lower_support}/3')
             }
             confirmation_gate = {
                 'valid': True,
@@ -807,7 +717,7 @@ def report(x):
            f"CONTINUATION SCORE: {x.get('continuation_score',0)}/100",
            f"TRANSITION SCORE: {x.get('transition_score',0)}/100",
            f"EXHAUSTION: {x['exhaustion_level']} ({x['exhaustion_score']}/100)"]
-    for t in ('H4','H1','M30','M15','M5','M1'):
+    for t in ('M15','M5','M1'):
         r=x['readings'][t]
         lines.append(f"{t}: {r['trend']} | MOM={r['momentum']} | BOS={r['bos']} | MSS={r['mss']} | DISP={r['displacement']} | FVG={r['fvg']} | LIQ={r['liquidity']} | ZONE={r['zone']} | EXT={r['extension']} | VOL={r['volatility']} | N={r['count']}")
     if x.get('exhaustion_reasons') and x.get('exhaustion_level') in ('HIGH','EXTREME'):

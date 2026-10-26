@@ -54,7 +54,7 @@ def save(c):
     p=Path(HISTORY_FILE); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps(c[-MAX_M1_HISTORY:],separators=(",",":")))
 
 def frames_from(history):
-    return {"M1":history,"M5":aggregate(history,5),"M15":aggregate(history,15),"M30":aggregate(history,30),"H1":aggregate(history,60),"H4":aggregate(history,240)}
+    return {"M1":history,"M5":aggregate(history,5),"M15":aggregate(history,15)}
 
 def _journal_record(x, candle):
     r=x["readings"]
@@ -82,13 +82,13 @@ def _journal_record(x, candle):
             "mss": r[t]["mss"], "displacement": r[t]["displacement"], "fvg": r[t]["fvg"],
             "liquidity": r[t]["liquidity"], "zone": r[t]["zone"],
             "extension": r[t]["extension"], "exhaustion": r[t]["exhaustion"], "volatility": r[t]["volatility"], "count": r[t]["count"]
-        } for t in ("H4","H1","M30","M15","M5","M1")}
+        } for t in ("M15","M5","M1")}
     }
 
 async def run():
-    print("QUTE V75 IMPROVED REVERSED-SIGNAL V3.9 BALANCED QUALITY/FREQUENCY — PAPER MONITOR")
-    print("REVERSED SIGNALS + REGIME/ENTRY/GEOMETRY GUARDS | SEPARATE JOURNAL")
-    print("REAL V75 TICK STREAM + IMPROVED PAPER JOURNAL — ANALYSIS ONLY; NO EXECUTION")
+    print("QUINT CAPITAL V75 REVERSED V3.12 — CONTINUOUS LIVE PAPER MONITOR")
+    print("M15 CONTEXT + M5 SETUP + M1 TRIGGER | FRESH V3.12 JOURNAL | AUTO PAPER TRADES")
+    print("LIVE DERIV V75 TICKS + CONTINUOUS SIMULATED TRADES — NO REAL ORDERS")
     storage_diagnostics()
     history=load(); print(f"[DATA] M1 history loaded: {len(history)}")
     setups=load_setups(); active=load_active()

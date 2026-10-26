@@ -5,9 +5,9 @@ from pathlib import Path
 
 # Isolated journal namespace for the structure-led exit model. Do not reuse
 # legacy journal environment variables or files from previous exit logic.
-ANALYSIS_JOURNAL_FILE = os.getenv("REV3_ANALYSIS_JOURNAL_FILE", "/app/data/qute_v75_improved_reversed_v3_9_analysis.jsonl")
-SETUP_JOURNAL_FILE = os.getenv("REV3_SETUP_JOURNAL_FILE", "/app/data/qute_v75_improved_reversed_v3_9_setups.json")
-ACTIVE_SETUPS_FILE = os.getenv("REV3_ACTIVE_SETUPS_FILE", "/app/data/qute_v75_improved_reversed_v3_9_active.json")
+ANALYSIS_JOURNAL_FILE = os.getenv("REV3_ANALYSIS_JOURNAL_FILE", "/app/data/qute_v75_reversed_v3_12_live_analysis.jsonl")
+SETUP_JOURNAL_FILE = os.getenv("REV3_SETUP_JOURNAL_FILE", "/app/data/qute_v75_reversed_v3_12_live_setups.json")
+ACTIVE_SETUPS_FILE = os.getenv("REV3_ACTIVE_SETUPS_FILE", "/app/data/qute_v75_reversed_v3_12_live_active.json")
 MAX_ANALYSIS_JOURNAL_BYTES = int(os.getenv("MAX_ANALYSIS_JOURNAL_BYTES", str(25 * 1024 * 1024)))
 MAX_SETUP_HISTORY = int(os.getenv("MAX_SETUP_HISTORY", "5000"))
 
@@ -88,7 +88,7 @@ def make_setup_record(x, candle):
     s = x.get("setup") or {}
     direction = "BUY" if x.get("state") == "BUY SETUP" else "SELL"
     return {
-        "id": f"V75-IMPROVED-REVERSED-V3_9-{int(candle['ts'])}-{direction}-{int(round(float(s.get('entry', 0))*100))}",
+        "id": f"V75-REVERSED-V3_12-LIVE-{int(candle['ts'])}-{direction}-{int(round(float(s.get('entry', 0))*100))}",
         "created_ts": int(candle["ts"]),
         "direction": direction,
         "state_at_creation": x.get("state"),
@@ -121,9 +121,9 @@ def make_setup_record(x, candle):
         "exhaustion_reasons": x.get("exhaustion_reasons", []),
         "confirmations": x.get("confirmations", []),
         "conflicts": x.get("conflicts", []),
-        "h4": x["readings"]["H4"]["trend"],
-        "h1": x["readings"]["H1"]["trend"],
-        "m30": x["readings"]["M30"]["trend"],
+        "h4": "NOT USED",
+        "h1": "NOT USED",
+        "m30": "NOT USED",
         "m15": x["readings"]["M15"]["trend"],
         "m5": x["readings"]["M5"]["trend"],
         "m1": x["readings"]["M1"]["trend"],

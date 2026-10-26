@@ -50,3 +50,8 @@ See `CHANGELOG_V3.9_STRATEGY_REPAIR.md`. This build adds reversed-direction conf
 
 ## V3.9 balanced frequency/quality
 See `CHANGELOG_V3_9_BALANCED_FREQUENCY.md`. This version uses a 2-of-3 reversed-direction confirmation and a balanced multi-timeframe regime path to admit more candidate setups while retaining structural and geometry safeguards. Analysis-only; no broker orders.
+
+
+## V3.10 timeframe focus
+
+This build focuses exclusively on M15 (context), M5 (setup confirmation), and M1 (entry trigger). H4/H1/M30 are not used as vetoes. Historical tick backtest uses the same three candle frames. Analysis-only: no broker orders. See `CHANGELOG_V3_10_M15_M5_M1_FOCUS.md`.
